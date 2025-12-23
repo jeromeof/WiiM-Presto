@@ -25,18 +25,29 @@ async def monitor():
     last_state = None
     last_track_id = None
     last_art_url = None  # Track if we successfully got album art
+    status_failures = 0  # Count consecutive failures
 
     while True:
         gc.collect()
 
-        # Fetch player status
+        # Fetch player status with retry logic
         status = fetch_player_status()
         if not status:
-            if last_state != "clock":
-                draw_clock()
-                last_state = "clock"
+            status_failures += 1
+            log("Status fetch failed ({}/3)".format(status_failures))
+
+            # Only show clock after 3 consecutive failures
+            if status_failures >= 3:
+                if last_state != "clock":
+                    log("Multiple status failures, showing clock")
+                    draw_clock()
+                    last_state = "clock"
+                status_failures = 0  # Reset counter
             await asyncio.sleep_ms(POLL_INTERVAL_SLOW_MS)
             continue
+
+        # Reset failure counter on success
+        status_failures = 0
 
         state = status.get("status", "stop")
         log("Status {}".format(state))
@@ -56,11 +67,11 @@ async def monitor():
 
         track_id = "{}|{}|{}".format(title, artist, album)
 
-        # Update display if track changed OR returning from clock OR no album art yet
+        # Update display if track changed OR returning from clock OR album art failed
         needs_update = (
             track_id != last_track_id or
             last_state == "clock" or
-            (last_art_url is None and track_id == last_track_id)
+            last_art_url == False  # False means previous art fetch failed
         )
 
         if needs_update:
@@ -69,8 +80,8 @@ async def monitor():
                 last_art_url = None  # Reset album art for new track
             elif last_state == "clock":
                 log("Returning from clock, redrawing track")
-            elif last_art_url is None:
-                log("Retrying metadata fetch (previous attempt failed)")
+            elif last_art_url == False:
+                log("Retrying album art fetch (previous attempt failed)")
 
             # Fetch metadata for album art URL
             meta = fetch_meta_info()
@@ -82,10 +93,17 @@ async def monitor():
             else:
                 log("Metadata fetch failed, will retry next poll")
 
-            draw_track(title, artist, album, art_url)
+            # Draw track and get whether album art succeeded
+            art_displayed = draw_track(title, artist, album, art_url)
+
             last_track_id = track_id
             last_state = "track"
-            last_art_url = art_url  # Remember if we got album art
+
+            # Track album art success: True if displayed, False if failed, None if no URL
+            if art_url:
+                last_art_url = art_displayed  # True or False
+            else:
+                last_art_url = None  # No art URL provided
         else:
             log("Same track, skipping update")
 

@@ -11,6 +11,7 @@ from config import BACKLIGHT_BRIGHTNESS
 from http_client import fetch_url
 from utils import log
 from weather import get_weather
+from color_utils import get_album_art_colors
 
 # =======================
 # DISPLAY INITIALIZATION
@@ -57,43 +58,40 @@ def draw_clock():
     # Fetch weather to adjust layout
     weather = get_weather()
 
+    log("Display size: {}x{}".format(WIDTH, HEIGHT))
+
     if weather:
-        # With weather: time at top
-        vector.set_font_size(120)
-        tw = int(vector.measure_text(time_str)[0])
-        x = (WIDTH - tw) // 2
-        vector.text(time_str, x, 100)
+        # Presto 480x480 display - left-aligned, properly spaced
+        margin = 20
 
-        # Draw temperature (medium)
-        vector.set_font_size(50)
+        # Time at top (largest) - y position accounts for font height
+        vector.set_font_size(140)
+        vector.text(time_str, margin, 160)  # Position baseline, not top
+
+        # Temperature (very large)
+        vector.set_font_size(100)
         temp_text = weather["temperature"]
-        tw = int(vector.measure_text(temp_text)[0])
-        x = (WIDTH - tw) // 2
-        vector.text(temp_text, x, 260)
+        vector.text(temp_text, margin, 270)
 
-        # Draw weather description (small)
-        vector.set_font_size(24)
+        # Weather description (large, readable)
+        vector.set_font_size(48)
         desc_text = weather["description"]
-        tw = int(vector.measure_text(desc_text)[0])
-        x = (WIDTH - tw) // 2
-        vector.text(desc_text, x, 320)
+        vector.text(desc_text, margin, 350)
 
-        # Draw location (tiny)
-        vector.set_font_size(16)
+        # Location (medium, at bottom)
+        vector.set_font_size(32)
         loc_text = weather["location"]
-        tw = int(vector.measure_text(loc_text)[0])
-        x = (WIDTH - tw) // 2
-        vector.text(loc_text, x, 350)
+        vector.text(loc_text, margin, 420)
 
-        log("Clock with weather: {} {}".format(weather["temperature"], weather["description"]))
+        log("Clock with weather: {} {} in {}".format(
+            weather["temperature"], weather["description"], weather["location"]))
     else:
-        # Without weather: time centered
+        # Without weather: time left-aligned
         vector.set_font_size(180)
-        tw = int(vector.measure_text(time_str)[0])
-        x = (WIDTH - tw) // 2
-        y = HEIGHT // 2
-        vector.text(time_str, x, y)
+        vector.text(time_str, 20, 240)  # Centered vertically
         log("Clock (no weather data)")
+
+    log("Clock drawn")
 
     presto.update()
 
@@ -125,35 +123,45 @@ def draw_album_art(art_url):
         img_width, img_height = jpd.get_width(), jpd.get_height()
         log("Image size: {}x{}".format(img_width, img_height))
 
-        # Try scaling options to fill screen, prefer better quality
+        # Determine best scale to fit display (480x480)
+        # If image is larger than display, scale it down to fit
         for scale in (
+            jpegdec.JPEG_SCALE_FULL,
             jpegdec.JPEG_SCALE_HALF,
             jpegdec.JPEG_SCALE_QUARTER,
-            jpegdec.JPEG_SCALE_EIGHTH,
         ):
-            try:
-                # Calculate scaled dimensions
-                scale_factor = {
-                    jpegdec.JPEG_SCALE_HALF: 2,
-                    jpegdec.JPEG_SCALE_QUARTER: 4,
-                    jpegdec.JPEG_SCALE_EIGHTH: 8,
-                }.get(scale, 4)
+            scale_factor = {
+                jpegdec.JPEG_SCALE_FULL: 1,
+                jpegdec.JPEG_SCALE_HALF: 2,
+                jpegdec.JPEG_SCALE_QUARTER: 4,
+            }.get(scale, 1)
 
-                scaled_width = img_width // scale_factor
-                scaled_height = img_height // scale_factor
+            scaled_width = img_width // scale_factor
+            scaled_height = img_height // scale_factor
 
-                # Center the image on screen
+            # Calculate position to center or fit on screen
+            if scaled_width > WIDTH or scaled_height > HEIGHT:
+                # Image is larger than display, center it (will be cropped)
+                x = (WIDTH - scaled_width) // 2
+                y = (HEIGHT - scaled_height) // 2
+            else:
+                # Image fits, center it
                 x = (WIDTH - scaled_width) // 2
                 y = (HEIGHT - scaled_height) // 2
 
-                # Ensure non-negative position
-                x = max(0, x)
-                y = max(0, y)
+            # Clamp to screen bounds if negative
+            x = max(0, x)
+            y = max(0, y)
 
-                log("Decoding at position ({}, {}) with scale {}".format(x, y, scale_factor))
+            log("Decoding {}x{} at ({}, {}) scale 1/{}".format(
+                scaled_width, scaled_height, x, y, scale_factor))
+
+            try:
                 jpd.decode(x, y, scale)
+                log("Album art decoded successfully")
                 break
             except MemoryError:
+                log("OOM at scale 1/{}, trying smaller".format(scale_factor))
                 gc.collect()
         else:
             log("Album art decode failed (OOM)")
@@ -176,58 +184,86 @@ def draw_track(title, artist, album, art_url=None):
         artist: Artist name
         album: Album name
         art_url: Optional URL for album art
+
+    Returns:
+        bool: True if album art was successfully displayed
     """
     # Ensure we have valid strings
     title = title or "Unknown"
     artist = artist or "Unknown Artist"
 
+    art_success = False
+
     # Draw album art first if available (just decodes, doesn't update)
     if art_url:
-        if not draw_album_art(art_url):
+        art_success = draw_album_art(art_url)
+        if not art_success:
             # If album art fails, just use black background
+            log("Album art failed, using black background")
             clear_screen()
     else:
         # No album art, use black background
         clear_screen()
 
-    # Draw dark background bar at bottom for text
-    bar_height = 80
-    bar_y = HEIGHT - bar_height
+    # Starting position from bottom
+    text_x = 10  # Left margin
+    padding = 6
+    current_y = HEIGHT - 130
+    text_region_height = 130
 
-    # Create dark background
-    dark_bg = display.create_pen(0, 0, 0)  # Black background
-    display.set_pen(dark_bg)
-    display.rectangle(0, bar_y, WIDTH, bar_height)
+    # Get colors from album art if available, otherwise use defaults
+    if art_success:
+        try:
+            colors = get_album_art_colors(display, current_y, text_region_height)
+            bg_r, bg_g, bg_b = colors['background']
+            txt_r, txt_g, txt_b = colors['text']
+            bg_pen = display.create_pen(bg_r, bg_g, bg_b)
+            text_pen = display.create_pen(txt_r, txt_g, txt_b)
+            log("Using album colors - bg:({},{},{}), text:({},{},{})".format(
+                bg_r, bg_g, bg_b, txt_r, txt_g, txt_b))
+        except Exception as e:
+            log("Color sampling failed: {}, using defaults".format(e))
+            bg_pen = display.create_pen(0, 0, 0)
+            text_pen = WHITE
+    else:
+        # No album art, use black background with white text
+        bg_pen = display.create_pen(0, 0, 0)
+        text_pen = WHITE
 
-    # Draw text on top of dark background
-    display.set_pen(WHITE)
+    # Helper function to draw text with colored background
+    def draw_text_with_bg(text, x, y, font_size):
+        vector.set_font_size(font_size)
+        # Estimate text width (rough approximation since measure_text is unreliable)
+        # Average character is ~0.6 of font size width
+        est_width = int(len(text) * font_size * 0.6)
+        est_width = min(est_width, WIDTH - x - 10)  # Don't exceed screen
 
-    # Start text 8 pixels from top of bar
-    text_y = bar_y + 8
+        # Draw colored background box
+        display.set_pen(bg_pen)
+        display.rectangle(x - padding, y - padding, est_width + padding * 2, font_size + padding * 2)
 
-    # Line 1: Track title (large, centered)
-    vector.set_font_size(28)
-    tw = int(vector.measure_text(title)[0])
-    x = (WIDTH - tw) // 2
-    vector.text(title, x, text_y)
+        # Draw contrasting text on top
+        display.set_pen(text_pen)
+        vector.text(text, x, y + font_size)
 
-    # Line 2: Artist (left) and Album (right)
-    line2_y = text_y + 40
+    # Line 1: Track title (large)
+    draw_text_with_bg(title, text_x, current_y, 38)
+    log("Title: '{}'".format(title))
 
-    # Artist on the left (larger)
-    vector.set_font_size(18)
+    # Line 2: Artist
+    current_y += 50
     artist_text = artist if artist else "Unknown Artist"
-    vector.text(artist_text, 10, line2_y)
+    draw_text_with_bg(artist_text, text_x, current_y, 28)
 
-    # Album on the right (smaller, to distinguish from artist)
+    # Line 3: Album
     if album:
-        vector.set_font_size(15)
-        album_tw = int(vector.measure_text(album)[0])
-        album_x = WIDTH - album_tw - 10
-        vector.text(album, album_x, line2_y + 2)  # Slight offset for visual distinction
+        current_y += 40
+        draw_text_with_bg(album, text_x, current_y, 22)
 
-    log("Text overlay: {} - {} - {}".format(title, artist, album))
+    log("Text overlay: {} by {}".format(title, artist))
 
     # Update display once with everything drawn
     presto.update()
     log("Draw track: {} - {}".format(title, artist))
+
+    return art_success

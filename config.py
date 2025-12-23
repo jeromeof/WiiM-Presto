@@ -30,7 +30,7 @@ BACKLIGHT_BRIGHTNESS = 0.25
 WEATHER_API_KEY = "d98a842ad69d559cd854f8b6a19108b0"
 WEATHER_LOCATION = "Dublin,IE"
 WEATHER_UNITS = "metric"  # metric or imperial
-WEATHER_CACHE_TIME = 1800  # 30 minutes in seconds
+WEATHER_CACHE_TIME = 3600  # 1 hour in seconds
 
 # Debug mode
 DEBUG = True

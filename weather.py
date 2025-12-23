@@ -40,14 +40,20 @@ def get_weather():
             WEATHER_UNITS
         )
 
-        response = requests.get(url + params, timeout=10)
+        full_url = url + params
+        log("Weather URL: {}".format(full_url[:60] + "..."))  # Don't log full API key
+
+        response = requests.get(full_url, timeout=10)
+
+        log("Weather response status: {}".format(response.status_code))
 
         if response.status_code != 200:
-            log("Weather API error: {}".format(response.status_code))
+            log("Weather API error: {} - {}".format(response.status_code, response.text[:100]))
             response.close()
             return None
 
         data = response.json()
+        log("Weather data received: {}".format(str(data)[:100]))
         response.close()
 
         # Extract relevant info
