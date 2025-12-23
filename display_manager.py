@@ -65,8 +65,8 @@ def draw_clock():
         margin = 20
 
         # Time at top (largest) - y position accounts for font height
-        vector.set_font_size(140)
-        vector.text(time_str, margin, 160)  # Position baseline, not top
+        vector.set_font_size(180)
+        vector.text(time_str, margin, 180)  # Position baseline, not top
 
         # Temperature (very large)
         vector.set_font_size(100)
@@ -239,14 +239,40 @@ def draw_track(title, artist, album, art_url=None):
     # Helper function to draw text with colored background
     def draw_text_with_bg(text, x, y, font_size):
         vector.set_font_size(font_size)
-        # Estimate text width (rough approximation since measure_text is unreliable)
-        # Average character is ~0.6 of font size width
-        est_width = int(len(text) * font_size * 0.6)
-        est_width = min(est_width, WIDTH - x - 10)  # Don't exceed screen
+
+        # Try to measure text width accurately
+        text_width = None
+        try:
+            measured = vector.measure_text(text)
+            if measured:
+                # Extract width (measure_text might return tuple or int)
+                try:
+                    text_width = measured[0]  # Try to extract from tuple (width, height)
+                except (TypeError, IndexError):
+                    text_width = measured  # It's already an int
+
+                if text_width and text_width > 10:
+                    log("Measured '{}...' width: {}px at size {}".format(
+                        text[:15], text_width, font_size))
+                else:
+                    # Invalid measurement
+                    text_width = None
+        except Exception as e:
+            log("measure_text error: {}".format(e))
+            pass
+
+        # Fallback: estimate based on font size (Roboto Medium averages ~0.46em per char)
+        if text_width is None:
+            text_width = int(len(text) * font_size * 0.46)
+            log("Estimated '{}...' width: {}px at size {}".format(
+                text[:15], text_width, font_size))
+
+        # Don't exceed screen
+        text_width = min(text_width, WIDTH - x - 10)
 
         # Draw colored background box
         display.set_pen(bg_pen)
-        display.rectangle(x - padding, y - padding, est_width + padding * 2, font_size + padding * 2)
+        display.rectangle(x - padding, y - padding, text_width + padding * 2, font_size + padding * 2)
 
         # Draw contrasting text on top
         display.set_pen(text_pen)

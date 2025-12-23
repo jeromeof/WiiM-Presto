@@ -17,45 +17,64 @@ def sample_jpeg_colors(jpeg_data, width, height):
         dict: {'avg_color': (r, g, b)} or None
     """
     try:
-        # Sample bytes from different parts of the JPEG
-        # JPEG data contains RGB values scattered throughout
-        # We'll sample from the end (bottom of image typically)
-
         data_len = len(jpeg_data)
         if data_len < 1000:
+            log("JPEG too small for sampling: {} bytes".format(data_len))
             return None
 
-        # Sample from last 20% of file (often bottom of image)
-        start_pos = int(data_len * 0.8)
-        sample_size = min(500, data_len - start_pos)
+        log("JPEG sampling from {} byte file".format(data_len))
 
-        r_sum, g_sum, b_sum = 0, 0, 0
-        sample_count = 0
+        # Try sampling from multiple regions to find best color representation
+        regions = [
+            ("start 10-30%", int(data_len * 0.1), int(data_len * 0.3)),
+            ("middle 40-60%", int(data_len * 0.4), int(data_len * 0.6)),
+            ("end 70-90%", int(data_len * 0.7), int(data_len * 0.9)),
+        ]
 
-        # Sample every 3rd byte as potential RGB values
-        for i in range(start_pos, start_pos + sample_size, 3):
-            if i + 2 < data_len:
-                # Treat consecutive bytes as potential RGB
-                r = jpeg_data[i]
-                g = jpeg_data[i + 1]
-                b = jpeg_data[i + 2]
+        all_samples = []
 
-                # Filter out obvious non-color bytes (0x00, 0xFF markers)
-                if not (r in (0, 255) and g in (0, 255) and b in (0, 255)):
-                    r_sum += r
-                    g_sum += g
-                    b_sum += b
-                    sample_count += 1
+        for region_name, start_pos, end_pos in regions:
+            sample_size = min(300, end_pos - start_pos)
+            r_sum, g_sum, b_sum = 0, 0, 0
+            sample_count = 0
 
-        if sample_count > 10:
-            avg_r = r_sum // sample_count
-            avg_g = g_sum // sample_count
-            avg_b = b_sum // sample_count
+            # Sample every 3rd byte as potential RGB values
+            for i in range(start_pos, start_pos + sample_size, 3):
+                if i + 2 < data_len:
+                    r = jpeg_data[i]
+                    g = jpeg_data[i + 1]
+                    b = jpeg_data[i + 2]
 
-            log("JPEG color sample: RGB({},{},{}) from {} samples".format(
-                avg_r, avg_g, avg_b, sample_count))
+                    # Filter out obvious non-color bytes (0x00, 0xFF markers)
+                    if not (r in (0, 255) and g in (0, 255) and b in (0, 255)):
+                        r_sum += r
+                        g_sum += g
+                        b_sum += b
+                        sample_count += 1
 
-            return {'avg_color': (avg_r, avg_g, avg_b)}
+            if sample_count > 10:
+                avg_r = r_sum // sample_count
+                avg_g = g_sum // sample_count
+                avg_b = b_sum // sample_count
+
+                log("  {}: RGB({},{},{}) from {} samples".format(
+                    region_name, avg_r, avg_g, avg_b, sample_count))
+
+                all_samples.append((avg_r, avg_g, avg_b, sample_count))
+
+        # Use weighted average of all regions
+        if all_samples:
+            total_weight = sum(s[3] for s in all_samples)
+            final_r = sum(s[0] * s[3] for s in all_samples) // total_weight
+            final_g = sum(s[1] * s[3] for s in all_samples) // total_weight
+            final_b = sum(s[2] * s[3] for s in all_samples) // total_weight
+
+            log("JPEG final color: RGB({},{},{}) from {} total samples".format(
+                final_r, final_g, final_b, total_weight))
+
+            return {'avg_color': (final_r, final_g, final_b)}
+        else:
+            log("JPEG sampling: insufficient samples")
 
     except Exception as e:
         log("JPEG color sampling error: {}".format(e))
@@ -192,19 +211,25 @@ def adjust_color_for_visibility(r, g, b, min_saturation=50):
     min_val = min(r, g, b)
 
     if max_val == 0:
+        log("Color adjustment: black -> gray({})".format(min_saturation))
         return (min_saturation, min_saturation, min_saturation)
 
     saturation = (max_val - min_val) / max_val * 255
+    log("Color adjustment: RGB({},{},{}) saturation={:.0f}".format(r, g, b, saturation))
 
     # If too gray, boost the dominant color
     if saturation < min_saturation:
+        original = (r, g, b)
         # Find dominant channel
         if r >= g and r >= b:
             r = min(255, r + min_saturation)
+            log("  Boosting red: {} -> {}".format(original[0], r))
         elif g >= b:
             g = min(255, g + min_saturation)
+            log("  Boosting green: {} -> {}".format(original[1], g))
         else:
             b = min(255, b + min_saturation)
+            log("  Boosting blue: {} -> {}".format(original[2], b))
 
     return (r, g, b)
 
