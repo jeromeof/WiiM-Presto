@@ -26,6 +26,9 @@ WIDTH, HEIGHT = display.get_bounds()
 
 BLACK = display.create_pen(0, 0, 0)
 WHITE = display.create_pen(255, 255, 255)
+YELLOW = display.create_pen(255, 200, 0)
+LIGHT_GRAY = display.create_pen(180, 180, 180)
+GRAY = display.create_pen(140, 140, 140)
 
 log("Init Vector")
 vector = PicoVector(display)
@@ -64,24 +67,28 @@ def draw_clock():
         # Presto 480x480 display - left-aligned, properly spaced
         margin = 20
 
-        # Time at top (largest) - y position accounts for font height
-        vector.set_font_size(180)
-        vector.text(time_str, margin, 180)  # Position baseline, not top
+        # Time at top (largest) - white
+        display.set_pen(WHITE)
+        vector.set_font_size(200)
+        vector.text(time_str, margin, 200)  # Position baseline, not top
 
-        # Temperature (very large)
+        # Temperature (very large) - yellow to stand out
+        display.set_pen(YELLOW)
         vector.set_font_size(100)
         temp_text = weather["temperature"]
-        vector.text(temp_text, margin, 270)
+        vector.text(temp_text, margin, 310)
 
-        # Weather description (large, readable)
+        # Weather description (large, readable) - light gray
+        display.set_pen(LIGHT_GRAY)
         vector.set_font_size(48)
         desc_text = weather["description"]
-        vector.text(desc_text, margin, 350)
+        vector.text(desc_text, margin, 390)
 
-        # Location (medium, at bottom)
+        # Location (medium, at bottom) - medium gray
+        display.set_pen(GRAY)
         vector.set_font_size(32)
         loc_text = weather["location"]
-        vector.text(loc_text, margin, 420)
+        vector.text(loc_text, margin, 450)
 
         log("Clock with weather: {} {} in {}".format(
             weather["temperature"], weather["description"], weather["location"]))
@@ -125,8 +132,10 @@ def draw_album_art(art_url):
         img_width, img_height = jpd.get_width(), jpd.get_height()
         log("Image size: {}x{}".format(img_width, img_height))
 
-        # Try to sample colors from JPEG data
-        sampled_colors = sample_jpeg_colors(jpeg, img_width, img_height)
+        # Note: JPEG color sampling doesn't work reliably because JPEG files
+        # are compressed (DCT coefficients, not RGB pixels). Disabled for now.
+        # sampled_colors = sample_jpeg_colors(jpeg, img_width, img_height)
+        sampled_colors = None
 
         # Choose smallest scale that fills the display (minimize cropping/borders)
         # Check scales from smallest image to largest

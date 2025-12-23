@@ -61,9 +61,21 @@ def fetch_url(url, timeout=5):
         bytes: Response body (headers stripped) or None on error
     """
     try:
-        # Parse URL
-        host, path = url.split("/", 3)[2], "/" + url.split("/", 3)[3]
-        addr = socket.getaddrinfo(host, 80)[0][-1]
+        # Parse URL - handle both http://host/path and http://host:port/path
+        parts = url.split("/", 3)
+        host_port = parts[2]  # host or host:port
+        path = "/" + parts[3] if len(parts) > 3 else "/"
+
+        # Extract host and port
+        if ":" in host_port:
+            host, port_str = host_port.rsplit(":", 1)
+            port = int(port_str)
+        else:
+            host = host_port
+            port = 80
+
+        log("Fetching from {}:{} path {}".format(host, port, path[:50]))
+        addr = socket.getaddrinfo(host, port)[0][-1]
 
         s = socket.socket()
         s.settimeout(timeout)
