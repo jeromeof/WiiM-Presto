@@ -11,7 +11,7 @@ from config import BACKLIGHT_BRIGHTNESS
 from http_client import fetch_url
 from utils import log
 from weather import get_weather
-from color_utils import get_album_art_colors
+from color_utils import get_album_art_colors, sample_jpeg_colors, get_contrast_color, adjust_color_for_visibility
 
 # =======================
 # DISPLAY INITIALIZATION
@@ -104,14 +104,16 @@ def draw_album_art(art_url):
         art_url: URL of album art image (JPEG)
 
     Returns:
-        bool: True if successful, False otherwise
+        tuple: (success: bool, colors: dict or None)
+            success: True if decode worked
+            colors: {'avg_color': (r,g,b)} if sampling worked, None otherwise
     """
     try:
         log("Fetch art {}".format(art_url))
 
         jpeg = fetch_url(art_url)
         if not jpeg:
-            return False
+            return False, None
 
         # Clear and decode JPEG with scaling to fit display
         display.set_pen(BLACK)
@@ -123,57 +125,51 @@ def draw_album_art(art_url):
         img_width, img_height = jpd.get_width(), jpd.get_height()
         log("Image size: {}x{}".format(img_width, img_height))
 
-        # Determine best scale to fit display (480x480)
-        # If image is larger than display, scale it down to fit
-        for scale in (
-            jpegdec.JPEG_SCALE_FULL,
-            jpegdec.JPEG_SCALE_HALF,
-            jpegdec.JPEG_SCALE_QUARTER,
-        ):
-            scale_factor = {
-                jpegdec.JPEG_SCALE_FULL: 1,
-                jpegdec.JPEG_SCALE_HALF: 2,
-                jpegdec.JPEG_SCALE_QUARTER: 4,
-            }.get(scale, 1)
+        # Try to sample colors from JPEG data
+        sampled_colors = sample_jpeg_colors(jpeg, img_width, img_height)
 
-            scaled_width = img_width // scale_factor
-            scaled_height = img_height // scale_factor
+        # Choose smallest scale that fills the display (minimize cropping/borders)
+        # Check scales from smallest image to largest
+        scale = jpegdec.JPEG_SCALE_FULL
+        scale_factor = 1
 
-            # Calculate position to center or fit on screen
-            if scaled_width > WIDTH or scaled_height > HEIGHT:
-                # Image is larger than display, center it (will be cropped)
-                x = (WIDTH - scaled_width) // 2
-                y = (HEIGHT - scaled_height) // 2
-            else:
-                # Image fits, center it
-                x = (WIDTH - scaled_width) // 2
-                y = (HEIGHT - scaled_height) // 2
-
-            # Clamp to screen bounds if negative
-            x = max(0, x)
-            y = max(0, y)
-
-            log("Decoding {}x{} at ({}, {}) scale 1/{}".format(
-                scaled_width, scaled_height, x, y, scale_factor))
-
-            try:
-                jpd.decode(x, y, scale)
-                log("Album art decoded successfully")
+        for s, f in [
+            (jpegdec.JPEG_SCALE_QUARTER, 4),
+            (jpegdec.JPEG_SCALE_HALF, 2),
+            (jpegdec.JPEG_SCALE_FULL, 1),
+        ]:
+            w = img_width // f
+            h = img_height // f
+            if w >= WIDTH and h >= HEIGHT:
+                # This scale fills/exceeds display, use it
+                scale = s
+                scale_factor = f
                 break
-            except MemoryError:
-                log("OOM at scale 1/{}, trying smaller".format(scale_factor))
-                gc.collect()
-        else:
+
+        scaled_width = img_width // scale_factor
+        scaled_height = img_height // scale_factor
+
+        # Center the image on screen
+        x = (WIDTH - scaled_width) // 2
+        y = (HEIGHT - scaled_height) // 2
+
+        log("Decoding {}x{} at ({}, {}) scale 1/{}".format(
+            scaled_width, scaled_height, x, y, scale_factor))
+
+        try:
+            jpd.decode(x, y, scale)
+            log("Album art decoded successfully")
+        except MemoryError:
             log("Album art decode failed (OOM)")
-            return False
+            return False, None
 
         # Don't update display yet - let draw_track() do it after adding text
         log("Album art decoded")
-        return True
+        return True, sampled_colors
 
     except Exception as e:
         log("Album art error: {}".format(e))
-        return False
+        return False, None
 
 def draw_track(title, artist, album, art_url=None):
     """
@@ -193,10 +189,11 @@ def draw_track(title, artist, album, art_url=None):
     artist = artist or "Unknown Artist"
 
     art_success = False
+    art_colors = None
 
     # Draw album art first if available (just decodes, doesn't update)
     if art_url:
-        art_success = draw_album_art(art_url)
+        art_success, art_colors = draw_album_art(art_url)
         if not art_success:
             # If album art fails, just use black background
             log("Album art failed, using black background")
@@ -209,25 +206,34 @@ def draw_track(title, artist, album, art_url=None):
     text_x = 10  # Left margin
     padding = 6
     current_y = HEIGHT - 130
-    text_region_height = 130
 
-    # Get colors from album art if available, otherwise use defaults
-    if art_success:
+    # Use colors from JPEG sampling if available
+    bg_pen = None
+    text_pen = WHITE
+
+    if art_success and art_colors and 'avg_color' in art_colors:
         try:
-            colors = get_album_art_colors(display, current_y, text_region_height)
-            bg_r, bg_g, bg_b = colors['background']
-            txt_r, txt_g, txt_b = colors['text']
+            bg_r, bg_g, bg_b = art_colors['avg_color']
+
+            # Adjust color for better visibility
+            bg_r, bg_g, bg_b = adjust_color_for_visibility(bg_r, bg_g, bg_b)
+
+            # Get contrasting text color
+            txt_r, txt_g, txt_b = get_contrast_color(bg_r, bg_g, bg_b)
+
             bg_pen = display.create_pen(bg_r, bg_g, bg_b)
             text_pen = display.create_pen(txt_r, txt_g, txt_b)
-            log("Using album colors - bg:({},{},{}), text:({},{},{})".format(
+
+            log("Using JPEG colors - bg:({},{},{}), text:({},{},{})".format(
                 bg_r, bg_g, bg_b, txt_r, txt_g, txt_b))
         except Exception as e:
-            log("Color sampling failed: {}, using defaults".format(e))
-            bg_pen = display.create_pen(0, 0, 0)
-            text_pen = WHITE
-    else:
-        # No album art, use black background with white text
-        bg_pen = display.create_pen(0, 0, 0)
+            log("Color processing failed: {}".format(e))
+
+    # Fallback: Use semi-transparent dark gray (works with any album art)
+    if bg_pen is None:
+        log("Using semi-transparent overlay fallback")
+        # Dark gray with slight transparency effect (visually blends better)
+        bg_pen = display.create_pen(20, 20, 20)  # Very dark gray
         text_pen = WHITE
 
     # Helper function to draw text with colored background

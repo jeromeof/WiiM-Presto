@@ -4,6 +4,64 @@
 
 from utils import log
 
+def sample_jpeg_colors(jpeg_data, width, height):
+    """
+    Sample colors from JPEG data by looking at specific byte patterns.
+    This is a heuristic approach that samples the raw JPEG bytes.
+
+    Args:
+        jpeg_data: Raw JPEG bytes
+        width, height: Image dimensions
+
+    Returns:
+        dict: {'avg_color': (r, g, b)} or None
+    """
+    try:
+        # Sample bytes from different parts of the JPEG
+        # JPEG data contains RGB values scattered throughout
+        # We'll sample from the end (bottom of image typically)
+
+        data_len = len(jpeg_data)
+        if data_len < 1000:
+            return None
+
+        # Sample from last 20% of file (often bottom of image)
+        start_pos = int(data_len * 0.8)
+        sample_size = min(500, data_len - start_pos)
+
+        r_sum, g_sum, b_sum = 0, 0, 0
+        sample_count = 0
+
+        # Sample every 3rd byte as potential RGB values
+        for i in range(start_pos, start_pos + sample_size, 3):
+            if i + 2 < data_len:
+                # Treat consecutive bytes as potential RGB
+                r = jpeg_data[i]
+                g = jpeg_data[i + 1]
+                b = jpeg_data[i + 2]
+
+                # Filter out obvious non-color bytes (0x00, 0xFF markers)
+                if not (r in (0, 255) and g in (0, 255) and b in (0, 255)):
+                    r_sum += r
+                    g_sum += g
+                    b_sum += b
+                    sample_count += 1
+
+        if sample_count > 10:
+            avg_r = r_sum // sample_count
+            avg_g = g_sum // sample_count
+            avg_b = b_sum // sample_count
+
+            log("JPEG color sample: RGB({},{},{}) from {} samples".format(
+                avg_r, avg_g, avg_b, sample_count))
+
+            return {'avg_color': (avg_r, avg_g, avg_b)}
+
+    except Exception as e:
+        log("JPEG color sampling error: {}".format(e))
+
+    return None
+
 def sample_pixels(display, x, y, width, height, sample_count=50):
     """
     Sample random pixels from a region of the display.
