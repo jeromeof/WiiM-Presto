@@ -11,202 +11,205 @@ from wiim_client import (
     fetch_player_status, fetch_meta_info,
     pause_playback, resume_playback, next_track, previous_track
 )
-from display_manager import draw_clock, draw_track, presto
-from input_handler import check_playback_buttons, check_resume_button
-from touch_handler import TouchHandler
+from display_manager import draw_clock, draw_track, draw_playback_buttons, presto
+from touch_manager import TouchManager
+
+# =======================
+# SCREEN STATES
+# =======================
+
+STATE_CLOCK = "clock"  # Showing clock/weather (stopped or paused)
+STATE_PLAYING = "playing"  # Showing now playing (music playing)
 
 # =======================
 # MAIN MONITOR LOOP
 # =======================
 
 async def monitor():
-    """
-    Main monitoring loop that polls WiiM device status and updates display.
-    Shows clock when stopped, track info with album art when playing.
-    Uses smart polling: slow during track, fast near end.
-    """
+    """Main monitoring loop."""
     log("Enter monitor loop")
 
-    # Initialize touch handler (but don't enable yet)
-    touch_handler = TouchHandler(presto)
-    log("TouchHandler created")
+    # Initialize touch manager
+    touch_mgr = TouchManager(presto)
+    touch_mgr.enable()
 
-    last_state = None
+    # State tracking
+    screen_state = None  # What's currently shown on screen
+    player_state = None  # Player status (play/pause/stop)
+
     last_track_id = None
-    last_art_url = None  # Track if we successfully got album art
-    status_failures = 0  # Count consecutive failures
-
-    # Player pause state tracking
-    player_paused = False
+    last_art_url = None
+    cached_art_url = None
+    art_fetch_failures = 0
+    status_failures = 0
 
     while True:
         gc.collect()
 
-        # Fetch player status with retry logic
+        # ============================================
+        # FETCH PLAYER STATUS
+        # ============================================
+
         status = fetch_player_status()
         if not status:
             status_failures += 1
             log("Status fetch failed ({}/3)".format(status_failures))
 
-            # Disable touch when connection fails
-            if status_failures >= 1:
-                touch_handler.disable()
-
-            # Only show clock after 3 consecutive failures
             if status_failures >= 3:
-                if last_state != "clock":
-                    log("Multiple status failures, showing clock")
-                    draw_clock()
-                    last_state = "clock"
-                status_failures = 0  # Reset counter
+                # Show clock on repeated failures
+                if screen_state != STATE_CLOCK:
+                    log("Connection lost - showing clock")
+                    draw_clock(show_resume=False)
+                    screen_state = STATE_CLOCK
+                status_failures = 0
 
             await asyncio.sleep_ms(POLL_INTERVAL_SLOW_MS)
             continue
 
-        # Reset failure counter and enable touch on success
         status_failures = 0
-        if not touch_handler.enabled:
-            touch_handler.enable()
-            log("TouchHandler enabled (connection successful)")
+        player_state = status.get("status", "stop")
+        log("Player: {}".format(player_state))
 
-        state = status.get("status", "stop")
-        log("Status {}".format(state))
+        # ============================================
+        # HANDLE CLOCK SCREEN (Stopped/Paused)
+        # ============================================
 
-        # Track pause state separately from stop
-        player_paused = (state == "pause")
+        if player_state != "play":
+            is_paused = (player_state == "pause")
 
-        # Show clock if not playing
-        if state != "play":
-            # Check resume button if paused
-            if player_paused:
-                log("Player is paused, checking resume button...")
+            # Handle touch on clock screen
+            touch_action = touch_mgr.handle_touch_on_clock_screen()
 
-            if player_paused and check_resume_button():
-                log("Resume button pressed")
+            if touch_action == "resume" and is_paused:
+                log(">>> RESUME PRESSED")
                 if resume_playback():
-                    # Wait for state to update
                     await asyncio.sleep_ms(500)
-                    # Force track redraw on next iteration
-                    last_state = None
+                    # Force transition to playing screen
+                    screen_state = None
+                    player_state = None
                     continue
 
-            # Draw clock with resume button if paused
-            if last_state != "clock":
-                draw_clock(show_resume=player_paused)
-                last_state = "clock"
+            # Draw clock if not already showing
+            if screen_state != STATE_CLOCK:
+                log("Drawing clock (paused={})".format(is_paused))
+                draw_clock(show_resume=is_paused)
+                screen_state = STATE_CLOCK
+                log("Screen state: CLOCK")
 
-            await asyncio.sleep_ms(POLL_INTERVAL_SLOW_MS)
+            await asyncio.sleep_ms(1000 if is_paused else POLL_INTERVAL_SLOW_MS)
             continue
 
         # ============================================
-        # NOW PLAYING SCREEN
+        # HANDLE PLAYING SCREEN
         # ============================================
 
-        # Extract track information
-        title  = hex_to_text(status.get("Title"))
+        # Get track info
+        title = hex_to_text(status.get("Title"))
         artist = hex_to_text(status.get("Artist"))
-        album  = hex_to_text(status.get("Album"))
-
+        album = hex_to_text(status.get("Album"))
         track_id = "{}|{}|{}".format(title, artist, album)
 
-        # Check if screen was touched (shows buttons)
-        if touch_handler.was_screen_touched():
-            log(">>> Touch detected from handler")
-            touch_handler.show_buttons()
+        # Handle touch on playing screen
+        touch_action = touch_mgr.handle_touch_on_playing_screen()
+        buttons_visible = touch_mgr.are_playback_buttons_visible()
 
-        # Get button visibility from handler
-        buttons_visible = touch_handler.are_buttons_visible()
+        # Handle button actions
+        if touch_action == "pause":
+            log(">>> PAUSE PRESSED")
+            if pause_playback():
+                touch_mgr.hide_playback_buttons()
+                await asyncio.sleep_ms(500)
+                # Force transition to clock
+                screen_state = None
+                continue
 
-        # Button press handling
-        if buttons_visible:
-            log("Buttons are visible, checking for button presses...")
-            button_action = check_playback_buttons()
-            log("Button action result: {}".format(button_action))
+        elif touch_action == "next":
+            log(">>> NEXT PRESSED")
+            if next_track():
+                await asyncio.sleep_ms(500)
+                last_track_id = None  # Force redraw
 
-            if button_action == "prev":
-                log(">>> PREVIOUS BUTTON ACTION")
-                if previous_track():
-                    await asyncio.sleep_ms(500)
-                    last_track_id = None  # Force redraw
-                    touch_handler.hide_buttons()
+        elif touch_action == "prev":
+            log(">>> PREV PRESSED")
+            if previous_track():
+                await asyncio.sleep_ms(500)
+                last_track_id = None  # Force redraw
 
-            elif button_action == "pause":
-                log(">>> PAUSE BUTTON ACTION")
-                if pause_playback():
-                    # Will transition to clock on next iteration
-                    player_paused = True
-                    touch_handler.hide_buttons()
-                    await asyncio.sleep_ms(500)
-                    continue
+        elif touch_action == "show_buttons":
+            # Just draw buttons on top of existing screen
+            log(">>> SHOWING BUTTONS")
+            draw_playback_buttons()
+            presto.update()
 
-            elif button_action == "next":
-                log(">>> NEXT BUTTON ACTION")
-                if next_track():
-                    await asyncio.sleep_ms(500)
-                    last_track_id = None  # Force redraw
-                    touch_handler.hide_buttons()
+        elif touch_action == "hide_buttons":
+            # Force redraw to remove buttons
+            log(">>> HIDING BUTTONS")
+            last_track_id = None  # Force redraw
 
-        # Update display if track changed OR returning from clock OR album art failed
-        needs_update = (
-            track_id != last_track_id or
-            last_state == "clock" or
-            last_art_url == False  # False means previous art fetch failed
-        )
+        # Determine if we need to redraw
+        track_changed = (track_id != last_track_id)
+        returning_from_clock = (screen_state != STATE_PLAYING)
+        art_needs_retry = (last_art_url == False and art_fetch_failures < 3)
 
-        if needs_update:
-            if track_id != last_track_id:
-                log("Track changed: {}".format(track_id))
-                last_art_url = None  # Reset album art for new track
-            elif last_state == "clock":
-                log("Returning from clock, redrawing track")
-            elif last_art_url == False:
-                log("Retrying album art fetch (previous attempt failed)")
+        needs_redraw = track_changed or returning_from_clock or art_needs_retry
 
-            # Fetch metadata for album art URL
-            meta = fetch_meta_info()
-            art_url = None
+        if needs_redraw:
+            log("Redrawing: track_changed={}, from_clock={}, art_retry={}".format(
+                track_changed, returning_from_clock, art_needs_retry
+            ))
 
-            if meta:
-                art_url = meta.get("albumArtURI")
-                log("Album art URL: {}".format(art_url))
-            else:
-                log("Metadata fetch failed, will retry next poll")
-
-            # Draw track with button visibility parameter
-            art_displayed = draw_track(title, artist, album, art_url, show_buttons=buttons_visible)
-
-            last_track_id = track_id
-            last_state = "track"
-
-            # Track album art success: True if displayed, False if failed, None if no URL
-            if art_url:
-                last_art_url = art_displayed  # True or False
-            else:
-                last_art_url = None  # No art URL provided
-        else:
-            log("Same track, skipping update")
-
-        # Smart polling: Check time remaining
-        poll_interval = POLL_INTERVAL_SLOW_MS
-
-        try:
-            # Try to get track position and duration (in milliseconds)
-            totlen = int(status.get("totlen", 0))
-            curpos = int(status.get("curpos", 0))
-
-            if totlen > 0 and curpos >= 0:
-                remaining_ms = totlen - curpos
-                remaining_s = remaining_ms // 1000
-
-                # Use fast polling if near end of track
-                if remaining_s <= TRACK_END_THRESHOLD_S:
-                    poll_interval = POLL_INTERVAL_FAST_MS
-                    log("Near track end ({}s remaining), fast polling".format(remaining_s))
+            # Fetch album art URL if needed
+            if track_changed or returning_from_clock or cached_art_url is None:
+                meta = fetch_meta_info()
+                if meta:
+                    cached_art_url = meta.get("albumArtURI")
+                    log("Album art URL: {}".format(cached_art_url))
                 else:
-                    log("Track playing ({}s remaining), slow polling".format(remaining_s))
-        except (ValueError, TypeError):
-            # If we can't parse timing, use slow polling
-            log("No timing info, using slow polling")
+                    log("Metadata fetch failed")
+
+            # Draw track
+            art_displayed = draw_track(
+                title, artist, album,
+                cached_art_url,
+                show_buttons=buttons_visible
+            )
+
+            # Update state
+            last_track_id = track_id
+            screen_state = STATE_PLAYING
+            log("Screen state: PLAYING")
+
+            # Track art success/failure
+            if cached_art_url:
+                last_art_url = art_displayed
+                if art_displayed:
+                    art_fetch_failures = 0
+                    log("Album art OK")
+                else:
+                    art_fetch_failures += 1
+                    log("Album art failed ({}/3)".format(art_fetch_failures))
+            else:
+                last_art_url = None
+                art_fetch_failures = 0
+
+        # Determine poll interval
+        if buttons_visible:
+            poll_interval = 100  # Very fast when buttons visible
+        else:
+            poll_interval = 1000  # 1 second default during playback
+
+            # Check for track end (fast polling)
+            try:
+                totlen = int(status.get("totlen", 0))
+                curpos = int(status.get("curpos", 0))
+
+                if totlen > 0 and curpos >= 0:
+                    remaining_s = (totlen - curpos) // 1000
+                    if remaining_s <= TRACK_END_THRESHOLD_S:
+                        poll_interval = POLL_INTERVAL_FAST_MS
+
+            except (ValueError, TypeError):
+                pass
 
         await asyncio.sleep_ms(poll_interval)
 
@@ -215,11 +218,11 @@ async def monitor():
 # =======================
 
 def main():
-    """Initialize WiFi, display clock, and start monitoring loop."""
+    """Boot sequence."""
     log("Boot")
     connect_wifi()
     draw_clock()
-    log("Starting asyncio")
+    log("Starting monitor loop")
     asyncio.run(monitor())
 
 main()
