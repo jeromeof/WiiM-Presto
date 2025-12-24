@@ -36,15 +36,19 @@ def check_playback_buttons():
     Returns:
         str: "prev", "pause", "next", or None
     """
+    log("Checking playback buttons...")
+
     if prev_button.is_pressed():
-        log("Previous button pressed")
+        log(">>> Previous button pressed!")
         return "prev"
     elif pause_button.is_pressed():
-        log("Pause button pressed")
+        log(">>> Pause button pressed!")
         return "pause"
     elif next_button.is_pressed():
-        log("Next button pressed")
+        log(">>> Next button pressed!")
         return "next"
+
+    log("No playback button pressed")
     return None
 
 
@@ -55,9 +59,13 @@ def check_resume_button():
     Returns:
         bool: True if pressed
     """
+    log("Checking resume button...")
+
     if resume_button.is_pressed():
-        log("Resume button pressed")
+        log(">>> Resume button pressed!")
         return True
+
+    log("Resume button not pressed")
     return False
 
 
@@ -72,9 +80,30 @@ def check_screen_tap(presto):
     Returns:
         bool: True if screen was touched
     """
-    # presto.touch_a returns (x, y, state) tuple
-    # state is True when touched
+    # presto.touch_a returns Touch namedtuple (x, y, touched)
     touch_data = presto.touch_a
-    if touch_data and len(touch_data) >= 3:
-        return touch_data[2]  # Return touch state (True/False)
+
+    log("check_screen_tap() - Touch data: {}".format(touch_data))
+    log("check_screen_tap() - Touch data type: {}".format(type(touch_data)))
+
+    if touch_data is None:
+        log("check_screen_tap() - touch_data is None!")
+        return False
+
+    try:
+        # Access the .touched attribute (not index!)
+        touch_state = touch_data.touched
+        log("check_screen_tap() - Touch state (.touched): {}".format(touch_state))
+        log("check_screen_tap() - Touch x: {}, y: {}".format(touch_data.x, touch_data.y))
+
+        if touch_state:
+            log(">>> SCREEN TOUCHED! at ({}, {})".format(touch_data.x, touch_data.y))
+            return True
+        else:
+            log("check_screen_tap() - Touch state is False (not touched)")
+
+    except AttributeError as e:
+        log("check_screen_tap() - AttributeError: {}".format(e))
+        log("check_screen_tap() - Touch data attributes: {}".format(dir(touch_data)))
+
     return False
