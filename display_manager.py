@@ -48,8 +48,13 @@ def clear_screen():
     display.set_pen(BLACK)
     display.clear()
 
-def draw_clock():
-    """Draw the current time with weather information."""
+def draw_clock(show_resume=False):
+    """
+    Draw the current time with weather information.
+
+    Args:
+        show_resume: If True, draw resume button (player is paused)
+    """
     clear_screen()
 
     # Draw time (large, centered)
@@ -97,6 +102,10 @@ def draw_clock():
         vector.set_font_size(180)
         vector.text(time_str, 20, 240)  # Centered vertically
         log("Clock (no weather data)")
+
+    # Draw resume button if player is paused
+    if show_resume:
+        draw_resume_button()
 
     log("Clock drawn")
 
@@ -180,15 +189,16 @@ def draw_album_art(art_url):
         log("Album art error: {}".format(e))
         return False, None
 
-def draw_track(title, artist, album, art_url=None):
+def draw_track(title, artist, album, art_url=None, show_buttons=False):
     """
-    Draw track information with optional album art.
+    Draw track information with optional album art and playback buttons.
 
     Args:
         title: Track title
         artist: Artist name
         album: Album name
         art_url: Optional URL for album art
+        show_buttons: If True, draw playback control buttons
 
     Returns:
         bool: True if album art was successfully displayed
@@ -303,8 +313,80 @@ def draw_track(title, artist, album, art_url=None):
 
     log("Text overlay: {} by {}".format(title, artist))
 
+    # Draw playback buttons if requested (before presto.update)
+    if show_buttons:
+        draw_playback_buttons()
+
     # Update display once with everything drawn
     presto.update()
     log("Draw track: {} - {}".format(title, artist))
 
     return art_success
+
+def draw_playback_buttons():
+    """
+    Draw playback control buttons at bottom of screen.
+    Overlays on top of album art and track info.
+    """
+    from input_handler import prev_button, pause_button, next_button
+
+    # Button styling
+    button_bg = display.create_pen(30, 30, 30)  # Dark gray
+    button_border = WHITE
+    button_text = WHITE
+
+    # Helper to draw one button
+    def draw_button(btn, label):
+        x, y, w, h = btn.bounds
+
+        # Draw background
+        display.set_pen(button_bg)
+        display.rectangle(x, y, w, h)
+
+        # Draw border (2px white outline)
+        display.set_pen(button_border)
+        display.rectangle(x, y, w, 2)  # Top
+        display.rectangle(x, y, 2, h)  # Left
+        display.rectangle(x + w - 2, y, 2, h)  # Right
+        display.rectangle(x, y + h - 2, w, 2)  # Bottom
+
+        # Draw centered text
+        display.set_pen(button_text)
+        vector.set_font_size(32)
+
+        # Center text in button (approximate)
+        text_x = x + 20  # Manual centering for short labels
+        text_y = y + 40
+        vector.text(label, text_x, text_y)
+
+    # Draw buttons
+    draw_button(prev_button, "<<")
+    draw_button(pause_button, "||")
+    draw_button(next_button, ">>")
+
+    log("Playback buttons drawn")
+
+
+def draw_resume_button():
+    """
+    Draw resume button on clock screen.
+    Only shown when music is paused.
+    """
+    from input_handler import resume_button
+
+    x, y, w, h = resume_button.bounds
+
+    # Yellow background (matches weather styling)
+    button_bg = YELLOW
+    button_text = BLACK
+
+    # Draw background
+    display.set_pen(button_bg)
+    display.rectangle(x, y, w, h)
+
+    # Draw text
+    display.set_pen(button_text)
+    vector.set_font_size(36)
+    vector.text("> RESUME", x + 20, y + 50)
+
+    log("Resume button drawn")

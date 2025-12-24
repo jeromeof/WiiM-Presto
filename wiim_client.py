@@ -67,3 +67,54 @@ def fetch_meta_info():
     except Exception as e:
         log("MetaInfo error: {}".format(e))
         return None
+
+def send_player_command(command):
+    """
+    Send playback control command to WiiM device.
+
+    Args:
+        command: Control command (pause, resume, next, prev)
+
+    Returns:
+        bool: True if command succeeded (response contains "OK")
+    """
+    try:
+        raw = http_get(
+            "/?ip={}&command=setPlayerCmd:{}".format(WIIM_IP, command)
+        )
+
+        if not raw:
+            log("Control command failed: empty response")
+            return False
+
+        # Check if response contains "OK"
+        if b"OK" in raw:
+            log("Control command succeeded: {}".format(command))
+            return True
+        else:
+            log("Control command failed: {}".format(command))
+            return False
+
+    except Exception as e:
+        log("Control error: {}".format(e))
+        return False
+
+
+def pause_playback():
+    """Pause current playback."""
+    return send_player_command("pause")
+
+
+def resume_playback():
+    """Resume paused playback."""
+    return send_player_command("resume")
+
+
+def next_track():
+    """Skip to next track."""
+    return send_player_command("next")
+
+
+def previous_track():
+    """Go to previous track."""
+    return send_player_command("prev")

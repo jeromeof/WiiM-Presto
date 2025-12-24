@@ -3,12 +3,19 @@
 # ==========================================================
 
 import gc
+import time
 import uasyncio as asyncio
 from config import POLL_INTERVAL_SLOW_MS, POLL_INTERVAL_FAST_MS, TRACK_END_THRESHOLD_S
 from utils import log, hex_to_text
 from wifi import connect_wifi
-from wiim_client import fetch_player_status, fetch_meta_info
-from display_manager import draw_clock, draw_track
+from wiim_client import (
+    fetch_player_status, fetch_meta_info,
+    pause_playback, resume_playback, next_track, previous_track
+)
+from display_manager import draw_clock, draw_track, presto
+from input_handler import (
+    check_playback_buttons, check_resume_button, check_screen_tap
+)
 
 # =======================
 # MAIN MONITOR LOOP
@@ -27,8 +34,19 @@ async def monitor():
     last_art_url = None  # Track if we successfully got album art
     status_failures = 0  # Count consecutive failures
 
+    # Button visibility state
+    buttons_visible = False
+    last_touch_time = 0
+    BUTTON_TIMEOUT_MS = 5000
+
+    # Player pause state tracking
+    player_paused = False
+
     while True:
         gc.collect()
+
+        # Poll touch input (must be called every iteration)
+        presto.touch.poll()
 
         # Fetch player status with retry logic
         status = fetch_player_status()
@@ -52,10 +70,24 @@ async def monitor():
         state = status.get("status", "stop")
         log("Status {}".format(state))
 
+        # Track pause state separately from stop
+        player_paused = (state == "pause")
+
         # Show clock if not playing
         if state != "play":
+            # Check resume button if paused
+            if player_paused and check_resume_button():
+                log("Resume button pressed")
+                if resume_playback():
+                    # Wait for state to update
+                    await asyncio.sleep_ms(500)
+                    # Force track redraw on next iteration
+                    last_state = None
+                    continue
+
+            # Draw clock with resume button if paused
             if last_state != "clock":
-                draw_clock()
+                draw_clock(show_resume=player_paused)
                 last_state = "clock"
             await asyncio.sleep_ms(POLL_INTERVAL_SLOW_MS)
             continue
@@ -66,6 +98,44 @@ async def monitor():
         album  = hex_to_text(status.get("Album"))
 
         track_id = "{}|{}|{}".format(title, artist, album)
+
+        # Button visibility timeout check
+        current_time = time.ticks_ms()
+        if buttons_visible:
+            elapsed = time.ticks_diff(current_time, last_touch_time)
+            if elapsed > BUTTON_TIMEOUT_MS:
+                buttons_visible = False
+                log("Button timeout, hiding controls")
+
+        # Screen tap detection - show buttons
+        if check_screen_tap(presto) and not buttons_visible:
+            buttons_visible = True
+            last_touch_time = current_time
+            log("Screen tapped, showing buttons")
+
+        # Button press handling
+        if buttons_visible:
+            button_action = check_playback_buttons()
+
+            if button_action == "prev":
+                if previous_track():
+                    await asyncio.sleep_ms(500)
+                    last_track_id = None  # Force redraw
+                    buttons_visible = False
+
+            elif button_action == "pause":
+                if pause_playback():
+                    # Will transition to clock on next iteration
+                    player_paused = True
+                    buttons_visible = False
+                    await asyncio.sleep_ms(500)
+                    continue
+
+            elif button_action == "next":
+                if next_track():
+                    await asyncio.sleep_ms(500)
+                    last_track_id = None  # Force redraw
+                    buttons_visible = False
 
         # Update display if track changed OR returning from clock OR album art failed
         needs_update = (
@@ -93,8 +163,8 @@ async def monitor():
             else:
                 log("Metadata fetch failed, will retry next poll")
 
-            # Draw track and get whether album art succeeded
-            art_displayed = draw_track(title, artist, album, art_url)
+            # Draw track with button visibility parameter
+            art_displayed = draw_track(title, artist, album, art_url, show_buttons=buttons_visible)
 
             last_track_id = track_id
             last_state = "track"

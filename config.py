@@ -32,5 +32,9 @@ WEATHER_LOCATION = "Dublin,IE"
 WEATHER_UNITS = "metric"  # metric or imperial
 WEATHER_CACHE_TIME = 3600  # 1 hour in seconds
 
+# Touch input configuration
+BUTTON_TIMEOUT_MS = 5000  # 5 seconds until buttons auto-hide
+CONTROL_COMMAND_DELAY_MS = 500  # Delay after control command for state propagation
+
 # Debug mode
 DEBUG = True
