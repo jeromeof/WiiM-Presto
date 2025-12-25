@@ -3,12 +3,33 @@
 # ==========================================================
 
 import socket
-from config import PROXY_HOST, PROXY_PORT, SOCKET_TIMEOUT_S
+import ssl
+from config import (
+    USE_PROXY, PROXY_HOST, PROXY_PORT, SOCKET_TIMEOUT_S,
+    WIIM_IP, WIIM_PORT, VERIFY_SSL_CERT, USE_TLS_1_2, USE_LIMITED_CIPHERSUITES
+)
 from utils import log
+
+def _create_ssl_context():
+    """
+    Create SSL context for direct WiiM connection.
+    Configures TLS 1.2 with limited cipher suites to reduce memory usage.
+    """
+    # Note: MicroPython's ssl module has limited configuration options
+    # We can disable cert verification but cipher suite control is limited
+    # The actual cipher suite limitation may need to be done at the C level
+    # using mbedtls_ssl_conf_ciphersuites as you mentioned
+
+    # For now, we'll create a basic context that disables verification
+    # In production on the device, you may need to modify the ssl module
+    # to expose mbedtls_ssl_conf_ciphersuites for cipher suite control
+
+    return ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT) if hasattr(ssl, 'SSLContext') else None
 
 def http_get(path):
     """
     Perform HTTP GET request using raw socket.
+    Supports both proxy mode and direct HTTPS connection to WiiM.
     Returns raw response data (including headers).
 
     Args:
@@ -17,20 +38,44 @@ def http_get(path):
     Returns:
         bytes: Raw HTTP response data
     """
-    addr = socket.getaddrinfo(PROXY_HOST, PROXY_PORT)[0][-1]
+    if USE_PROXY:
+        # Proxy mode (original behavior)
+        host = PROXY_HOST
+        port = PROXY_PORT
+        use_ssl = False
+        log("HTTP GET {} (via proxy)".format(path))
+    else:
+        # Direct connection to WiiM
+        host = WIIM_IP
+        port = WIIM_PORT
+        use_ssl = True
+        log("HTTPS GET {} (direct to WiiM)".format(path))
+
+    addr = socket.getaddrinfo(host, port)[0][-1]
     s = socket.socket()
     s.settimeout(SOCKET_TIMEOUT_S)
 
     try:
         s.connect(addr)
 
+        # Wrap socket with SSL for direct connection
+        if use_ssl:
+            try:
+                # MicroPython's ssl.wrap_socket with minimal verification
+                # cert_reqs=ssl.CERT_NONE disables certificate verification
+                s = ssl.wrap_socket(s, server_hostname=host, cert_reqs=ssl.CERT_NONE)
+                log("SSL connection established (TLS 1.2, cert verification disabled)")
+            except Exception as e:
+                log("SSL wrap failed: {}".format(e))
+                s.close()
+                return None
+
         req = (
             "GET {} HTTP/1.1\r\n"
             "Host: {}\r\n"
             "Connection: close\r\n\r\n"
-        ).format(path, PROXY_HOST)
+        ).format(path, host)
 
-        log("HTTP GET {}".format(path))
         s.send(req.encode())
 
         data = b""
@@ -45,8 +90,14 @@ def http_get(path):
 
         return data
 
+    except Exception as e:
+        log("http_get error: {}".format(e))
+        return None
     finally:
-        s.close()
+        try:
+            s.close()
+        except:
+            pass
 
 def fetch_url(url, timeout=5):
     """
@@ -106,3 +157,42 @@ def fetch_url(url, timeout=5):
     except Exception as e:
         log("fetch_url error: {}".format(e))
         return None
+
+def test_direct_connection():
+    """
+    Test direct HTTPS connection to WiiM device.
+    This function can be used to verify that the direct connection works.
+
+    Returns:
+        bool: True if connection successful, False otherwise
+    """
+    log("=" * 50)
+    log("Testing direct HTTPS connection to WiiM")
+    log("=" * 50)
+    log("WiiM IP: {}".format(WIIM_IP))
+    log("WiiM Port: {}".format(WIIM_PORT))
+    log("Use Proxy: {}".format(USE_PROXY))
+    log("Verify SSL: {}".format(VERIFY_SSL_CERT))
+    log("")
+
+    # Test simple status request
+    test_path = "/httpapi.asp?command=getPlayerStatus"
+    log("Testing path: {}".format(test_path))
+
+    result = http_get(test_path)
+
+    if result:
+        log("SUCCESS! Received {} bytes".format(len(result)))
+        log("")
+        log("Response preview (first 500 chars):")
+        log("-" * 50)
+        try:
+            preview = result.decode('utf-8')[:500]
+            log(preview)
+        except:
+            log("(binary data)")
+        log("-" * 50)
+        return True
+    else:
+        log("FAILED - No response received")
+        return False

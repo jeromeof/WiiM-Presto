@@ -9,7 +9,7 @@ from utils import log, hex_to_text
 from wifi import connect_wifi
 from wiim_client import (
     fetch_player_status, fetch_meta_info,
-    pause_playback, resume_playback, next_track, previous_track
+    pause_playback, resume_playback, next_track, previous_track, load_preset
 )
 from display_manager import draw_clock, draw_track, draw_playback_buttons, presto
 from touch_manager import TouchManager
@@ -79,24 +79,48 @@ async def monitor():
 
             # Handle touch on clock screen
             touch_action = touch_mgr.handle_touch_on_clock_screen()
+            buttons_visible = touch_mgr.is_resume_button_visible()
 
+            # Handle touch actions
             if touch_action == "resume" and is_paused:
                 log(">>> RESUME PRESSED")
                 if resume_playback():
+                    touch_mgr.hide_resume_button()
                     await asyncio.sleep_ms(500)
                     # Force transition to playing screen
                     screen_state = None
                     player_state = None
                     continue
 
-            # Draw clock if not already showing
+            elif touch_action and touch_action.startswith("preset_"):
+                # Handle preset button press
+                preset_num = int(touch_action.split("_")[1])
+                log(">>> PRESET {} PRESSED".format(preset_num))
+                if load_preset(preset_num):
+                    touch_mgr.hide_resume_button()
+                    await asyncio.sleep_ms(500)
+                    # Force transition to playing screen
+                    screen_state = None
+                    player_state = None
+                    continue
+
+            elif touch_action == "show_buttons" or touch_action == "hide_buttons":
+                # Redraw clock with updated button visibility
+                log(">>> REDRAW CLOCK - Buttons visible: {}".format(buttons_visible))
+                draw_clock(show_resume=buttons_visible and is_paused, show_presets=buttons_visible)
+                presto.update()
+
+            # Draw clock if not already showing (or needs redrawing)
             if screen_state != STATE_CLOCK:
                 log("Drawing clock (paused={})".format(is_paused))
-                draw_clock(show_resume=is_paused)
+                # Don't auto-show buttons, wait for touch
+                draw_clock(show_resume=False, show_presets=False)
                 screen_state = STATE_CLOCK
                 log("Screen state: CLOCK")
 
-            await asyncio.sleep_ms(1000 if is_paused else POLL_INTERVAL_SLOW_MS)
+            # Use faster polling when buttons are visible
+            poll_ms = 100 if buttons_visible else (1000 if is_paused else POLL_INTERVAL_SLOW_MS)
+            await asyncio.sleep_ms(poll_ms)
             continue
 
         # ============================================
@@ -219,10 +243,27 @@ async def monitor():
 
 def main():
     """Boot sequence."""
-    log("Boot")
-    connect_wifi()
-    draw_clock()
-    log("Starting monitor loop")
-    asyncio.run(monitor())
+    try:
+        log("Boot")
+        connect_wifi()
+        draw_clock()
+        log("Starting monitor loop")
+        asyncio.run(monitor())
+    except Exception as e:
+        # Show error on screen if possible
+        log("FATAL ERROR: {}".format(e))
+        try:
+            from display_manager import display, presto
+            display.set_pen(display.create_pen(255, 0, 0))
+            display.clear()
+            display.set_pen(display.create_pen(255, 255, 255))
+            display.text("ERROR: {}".format(str(e)[:50]), 10, 10, 460, 3)
+            presto.update()
+        except:
+            pass
+        # Keep running so we can see the error
+        import time
+        while True:
+            time.sleep(1)
 
 main()

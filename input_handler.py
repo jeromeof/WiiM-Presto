@@ -25,6 +25,22 @@ next_button = Button(320, BUTTON_Y, BUTTON_WIDTH, BUTTON_HEIGHT)
 # Clock screen - Resume button (centered at bottom)
 resume_button = Button(140, 400, 200, 70)
 
+# Clock screen - Preset buttons (row above resume button)
+# 4 presets in a single row: 90px wide, 50px tall, 20px spacing
+PRESET_BUTTON_Y = 330
+PRESET_BUTTON_WIDTH = 90
+PRESET_BUTTON_HEIGHT = 50
+PRESET_BUTTON_SPACING = 20
+PRESET_START_X = 30
+
+preset_button_1 = Button(PRESET_START_X, PRESET_BUTTON_Y, PRESET_BUTTON_WIDTH, PRESET_BUTTON_HEIGHT)
+preset_button_2 = Button(PRESET_START_X + PRESET_BUTTON_WIDTH + PRESET_BUTTON_SPACING, PRESET_BUTTON_Y, PRESET_BUTTON_WIDTH, PRESET_BUTTON_HEIGHT)
+preset_button_3 = Button(PRESET_START_X + (PRESET_BUTTON_WIDTH + PRESET_BUTTON_SPACING) * 2, PRESET_BUTTON_Y, PRESET_BUTTON_WIDTH, PRESET_BUTTON_HEIGHT)
+preset_button_4 = Button(PRESET_START_X + (PRESET_BUTTON_WIDTH + PRESET_BUTTON_SPACING) * 3, PRESET_BUTTON_Y, PRESET_BUTTON_WIDTH, PRESET_BUTTON_HEIGHT)
+
+# List of all preset buttons for easy iteration
+preset_buttons = [preset_button_1, preset_button_2, preset_button_3, preset_button_4]
+
 # =======================
 # BUTTON CHECK FUNCTIONS
 # =======================

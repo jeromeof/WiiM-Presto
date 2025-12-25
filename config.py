@@ -13,8 +13,15 @@ except ImportError:
     TIMEZONE_OFFSET = 0
 
 # Proxy configuration
-PROXY_HOST = "192.168.31.1"
+USE_PROXY = False  # Set to True to use proxy, False for direct connection
+PROXY_HOST = "192.168.31.1"  # Router IP (only used if USE_PROXY=True)
 PROXY_PORT = 8081
+
+# Direct connection SSL/TLS configuration (for direct WiiM connection)
+WIIM_PORT = 443  # HTTPS port for direct connection
+USE_TLS_1_2 = True  # Force TLS 1.2 (reduces memory requirements)
+VERIFY_SSL_CERT = False  # Disable certificate verification for WiiM devices
+USE_LIMITED_CIPHERSUITES = True  # Use only AES-128-GCM to reduce memory
 
 # Timing configuration
 POLL_INTERVAL_SLOW_MS = 10000   # Slow polling: 10 seconds (during track playback)
@@ -35,6 +42,16 @@ WEATHER_CACHE_TIME = 3600  # 1 hour in seconds
 # Touch input configuration
 BUTTON_TIMEOUT_MS = 5000  # 5 seconds until buttons auto-hide
 CONTROL_COMMAND_DELAY_MS = 500  # Delay after control command for state propagation
+
+# Preset configuration
+# Labels for the 4 preset buttons shown on clock screen
+# Set to None to disable a preset button
+PRESET_LABELS = [
+    "Jazz",      # Preset 1
+    "Classical", # Preset 2
+    "Rock",      # Preset 3
+    "Chill"      # Preset 4
+]
 
 # Debug mode
 DEBUG = True

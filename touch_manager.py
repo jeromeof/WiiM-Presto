@@ -27,8 +27,10 @@ class TouchManager:
 
         # Button visibility
         self.playback_buttons_visible = False
+        self.resume_button_visible = False
         self.button_timeout_ms = 10000  # 10 seconds
         self.last_button_show_time = 0
+        self.last_resume_button_show_time = 0
 
         log("TouchManager initialized")
 
@@ -137,26 +139,67 @@ class TouchManager:
     def handle_touch_on_clock_screen(self):
         """
         Handle touch on Clock screen (paused/stopped).
-        Returns: ("resume", None)
+        Returns: ("show_buttons", "hide_buttons", "resume", "preset_1", "preset_2", "preset_3", "preset_4", None)
         """
+        from input_handler import preset_buttons
+
         touched, x, y = self.was_touched()
         if not touched:
+            # Check for button timeout
+            if self.resume_button_visible:
+                elapsed = time.ticks_diff(time.ticks_ms(), self.last_resume_button_show_time)
+                if elapsed > self.button_timeout_ms:
+                    log("TouchManager: Clock buttons timeout")
+                    self.resume_button_visible = False
+                    return "hide_buttons"
             return None
 
         log("TouchManager: Touch on clock screen at ({}, {})".format(x, y))
 
-        # Check if touch is in resume button
-        if self.is_touch_in_button(x, y, resume_button):
-            log("TouchManager: RESUME button touched")
-            return "resume"
+        # Check if touch is in any button area
+        in_resume = self.is_touch_in_button(x, y, resume_button)
+        in_preset = None
+        for i, preset_btn in enumerate(preset_buttons):
+            if self.is_touch_in_button(x, y, preset_btn):
+                in_preset = i + 1  # Preset number (1-4)
+                break
 
-        return None
+        if self.resume_button_visible:
+            # Buttons visible - check what was touched
+            if in_resume:
+                log("TouchManager: RESUME button touched")
+                self.resume_button_visible = False
+                return "resume"
+            elif in_preset:
+                log("TouchManager: PRESET {} button touched".format(in_preset))
+                self.resume_button_visible = False
+                return "preset_{}".format(in_preset)
+            else:
+                # Touch outside buttons - hide them
+                log("TouchManager: Touch outside buttons - hiding")
+                self.resume_button_visible = False
+                return "hide_buttons"
+        else:
+            # Buttons hidden - show them on any touch
+            log("TouchManager: Showing clock buttons")
+            self.resume_button_visible = True
+            self.last_resume_button_show_time = time.ticks_ms()
+            return "show_buttons"
 
     def are_playback_buttons_visible(self):
         """Check if playback buttons should be visible."""
         return self.playback_buttons_visible
 
+    def is_resume_button_visible(self):
+        """Check if resume button should be visible."""
+        return self.resume_button_visible
+
     def hide_playback_buttons(self):
         """Hide playback buttons."""
         self.playback_buttons_visible = False
         log("TouchManager: Playback buttons hidden")
+
+    def hide_resume_button(self):
+        """Hide resume button."""
+        self.resume_button_visible = False
+        log("TouchManager: Resume button hidden")

@@ -48,12 +48,13 @@ def clear_screen():
     display.set_pen(BLACK)
     display.clear()
 
-def draw_clock(show_resume=False):
+def draw_clock(show_resume=False, show_presets=False):
     """
     Draw the current time with weather information.
 
     Args:
         show_resume: If True, draw resume button (player is paused)
+        show_presets: If True, draw preset buttons
     """
     clear_screen()
 
@@ -103,11 +104,15 @@ def draw_clock(show_resume=False):
         vector.text(time_str, 20, 240)  # Centered vertically
         log("Clock (no weather data)")
 
+    # Draw preset buttons if requested
+    if show_presets:
+        draw_preset_buttons()
+
     # Draw resume button if player is paused
     if show_resume:
         draw_resume_button()
 
-    log("Clock drawn")
+    log("Clock drawn (resume={}, presets={})".format(show_resume, show_presets))
 
     presto.update()
 
@@ -390,3 +395,57 @@ def draw_resume_button():
     vector.text("> RESUME", x + 20, y + 50)
 
     log("Resume button drawn")
+
+
+def draw_preset_buttons(preset_labels=None):
+    """
+    Draw preset buttons on clock screen.
+    Shows 4 preset buttons in a row above the resume button.
+
+    Args:
+        preset_labels: List of 4 preset labels (or None to use config defaults)
+    """
+    from input_handler import preset_buttons
+    from config import PRESET_LABELS
+
+    if preset_labels is None:
+        preset_labels = PRESET_LABELS
+
+    # Button styling - darker theme to match other buttons
+    button_bg = display.create_pen(40, 40, 40)  # Dark gray
+    button_border = display.create_pen(100, 100, 100)  # Medium gray border
+    button_text = WHITE
+
+    # Helper to draw one preset button
+    def draw_preset_button(btn, label, index):
+        if label is None:
+            return  # Skip disabled presets
+
+        x, y, w, h = btn.bounds
+
+        # Draw background
+        display.set_pen(button_bg)
+        display.rectangle(x, y, w, h)
+
+        # Draw border (1px outline)
+        display.set_pen(button_border)
+        display.rectangle(x, y, w, 1)  # Top
+        display.rectangle(x, y, 1, h)  # Left
+        display.rectangle(x + w - 1, y, 1, h)  # Right
+        display.rectangle(x, y + h - 1, w, 1)  # Bottom
+
+        # Draw centered text
+        display.set_pen(button_text)
+        vector.set_font_size(18)
+
+        # Center text in button (approximate)
+        # Text positioning: center horizontally in button
+        text_x = x + 5
+        text_y = y + 32
+        vector.text(label, text_x, text_y)
+
+    # Draw all 4 preset buttons
+    for i, (btn, label) in enumerate(zip(preset_buttons, preset_labels)):
+        draw_preset_button(btn, label, i + 1)
+
+    log("Preset buttons drawn")
