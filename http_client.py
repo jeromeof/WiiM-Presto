@@ -10,6 +10,11 @@ from config import (
 )
 from utils import log
 
+# Connection pooling - reuse SSL connections
+_cached_connection = None
+_cached_connection_host = None
+_cached_connection_port = None
+
 def _create_ssl_context():
     """
     Create SSL context for direct WiiM connection.
@@ -26,11 +31,68 @@ def _create_ssl_context():
 
     return ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT) if hasattr(ssl, 'SSLContext') else None
 
+def _get_or_create_connection(host, port, use_ssl):
+    """
+    Get cached connection or create new one.
+    Reuses existing connection if host/port match.
+    """
+    global _cached_connection, _cached_connection_host, _cached_connection_port
+
+    # Check if we can reuse existing connection
+    if (_cached_connection and
+        _cached_connection_host == host and
+        _cached_connection_port == port):
+        # Connection exists, return it
+        return _cached_connection
+
+    # Close old connection if exists
+    if _cached_connection:
+        try:
+            _cached_connection.close()
+            log("Closed old connection")
+        except:
+            pass
+        _cached_connection = None
+
+    # Create new connection
+    addr = socket.getaddrinfo(host, port)[0][-1]
+    s = socket.socket()
+    s.settimeout(SOCKET_TIMEOUT_S)
+    s.connect(addr)
+
+    # Wrap with SSL if needed
+    if use_ssl:
+        try:
+            s = ssl.wrap_socket(s, server_hostname=host, cert_reqs=ssl.CERT_NONE)
+            log("SSL connection established (TLS 1.2)")
+        except Exception as e:
+            log("SSL wrap failed: {}".format(e))
+            s.close()
+            raise
+
+    # Cache connection
+    _cached_connection = s
+    _cached_connection_host = host
+    _cached_connection_port = port
+
+    return s
+
+def close_connection():
+    """Close and clear cached connection."""
+    global _cached_connection
+    if _cached_connection:
+        try:
+            _cached_connection.close()
+        except:
+            pass
+        _cached_connection = None
+
 def http_get(path):
     """
     Perform HTTP GET request using raw socket.
     Supports both proxy mode and direct HTTPS connection to WiiM.
     Returns raw response data (including headers).
+    Reuses existing connections for performance.
 
     Args:
         path: URL path to request
@@ -43,37 +105,20 @@ def http_get(path):
         host = PROXY_HOST
         port = PROXY_PORT
         use_ssl = False
-        log("HTTP GET {} (via proxy)".format(path))
     else:
         # Direct connection to WiiM
         host = WIIM_IP
         port = WIIM_PORT
         use_ssl = True
-        log("HTTPS GET {} (direct to WiiM)".format(path))
-
-    addr = socket.getaddrinfo(host, port)[0][-1]
-    s = socket.socket()
-    s.settimeout(SOCKET_TIMEOUT_S)
 
     try:
-        s.connect(addr)
-
-        # Wrap socket with SSL for direct connection
-        if use_ssl:
-            try:
-                # MicroPython's ssl.wrap_socket with minimal verification
-                # cert_reqs=ssl.CERT_NONE disables certificate verification
-                s = ssl.wrap_socket(s, server_hostname=host, cert_reqs=ssl.CERT_NONE)
-                log("SSL connection established (TLS 1.2, cert verification disabled)")
-            except Exception as e:
-                log("SSL wrap failed: {}".format(e))
-                s.close()
-                return None
+        # Get or create connection (reuses if possible)
+        s = _get_or_create_connection(host, port, use_ssl)
 
         req = (
             "GET {} HTTP/1.1\r\n"
             "Host: {}\r\n"
-            "Connection: close\r\n\r\n"
+            "Connection: keep-alive\r\n\r\n"
         ).format(path, host)
 
         s.send(req.encode())
@@ -85,6 +130,12 @@ def http_get(path):
                 if not chunk:
                     break
                 data += chunk
+                # Check if we have complete response (look for end of headers + body)
+                if b"\r\n\r\n" in data:
+                    # For getPlayerStatus, response is small, likely complete
+                    # Check if we have received all data
+                    if len(data) > 100 and data[-1:] == b"}":
+                        break
             except OSError:
                 break
 
@@ -92,12 +143,9 @@ def http_get(path):
 
     except Exception as e:
         log("http_get error: {}".format(e))
+        # Clear cached connection on error
+        close_connection()
         return None
-    finally:
-        try:
-            s.close()
-        except:
-            pass
 
 def fetch_url(url, timeout=5):
     """

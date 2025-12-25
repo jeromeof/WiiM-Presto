@@ -4,7 +4,7 @@
 
 import json
 from config import WIIM_IP, USE_PROXY
-from http_client import http_get
+from http_client import http_get, close_connection
 from utils import log
 
 def _build_path(command):
@@ -84,6 +84,7 @@ def fetch_meta_info():
 def send_player_command(command):
     """
     Send playback control command to WiiM device.
+    Closes connection after command to avoid stale connection issues.
 
     Args:
         command: Control command (pause, resume, next, prev)
@@ -96,18 +97,23 @@ def send_player_command(command):
 
         if not raw:
             log("Control command failed: empty response")
+            close_connection()  # Close on failure
             return False
 
         # Check if response contains "OK"
         if b"OK" in raw:
             log("Control command succeeded: {}".format(command))
+            # Close connection after control command to prevent timeout issues
+            close_connection()
             return True
         else:
             log("Control command failed: {}".format(command))
+            close_connection()  # Close on failure
             return False
 
     except Exception as e:
         log("Control error: {}".format(e))
+        close_connection()  # Close on error
         return False
 
 
@@ -134,6 +140,7 @@ def previous_track():
 def load_preset(preset_number):
     """
     Load a WiiM preset (1-4).
+    Closes connection after command to avoid stale connection issues.
 
     Args:
         preset_number: Preset number (1-4)
@@ -151,16 +158,20 @@ def load_preset(preset_number):
 
         if not raw:
             log("Preset {} command failed: empty response".format(preset_number))
+            close_connection()  # Close on failure
             return False
 
         # Check if response contains "OK"
         if b"OK" in raw:
             log("Preset {} loaded successfully".format(preset_number))
+            close_connection()  # Close after successful command
             return True
         else:
             log("Preset {} command failed".format(preset_number))
+            close_connection()  # Close on failure
             return False
 
     except Exception as e:
         log("Preset error: {}".format(e))
+        close_connection()  # Close on error
         return False

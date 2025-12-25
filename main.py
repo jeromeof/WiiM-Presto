@@ -47,6 +47,105 @@ async def monitor():
         gc.collect()
 
         # ============================================
+        # PRIORITY: HANDLE TOUCHES FIRST!
+        # ============================================
+        # Check for touches BEFORE doing any slow API calls
+        # This ensures immediate button display/response
+
+        if screen_state == STATE_CLOCK:
+            touch_action = touch_mgr.handle_touch_on_clock_screen()
+            if touch_action == "show_resume":
+                # First touch - show only resume button
+                log(">>> SHOWING RESUME BUTTON (immediate)")
+                draw_clock(show_resume=player_state == "pause", show_presets=False)
+                presto.update()
+                await asyncio.sleep_ms(50)
+                continue
+
+            elif touch_action == "show_presets":
+                # Touch outside resume button - show preset buttons too
+                log(">>> SHOWING PRESET BUTTONS (immediate)")
+                draw_clock(show_resume=player_state == "pause", show_presets=True)
+                presto.update()
+                await asyncio.sleep_ms(50)
+                continue
+
+            elif touch_action == "hide_buttons":
+                log(">>> HIDING CLOCK BUTTONS (immediate)")
+                draw_clock(show_resume=False, show_presets=False)
+                presto.update()
+                await asyncio.sleep_ms(50)
+                continue
+
+            elif touch_action == "resume" and player_state == "pause":
+                log(">>> RESUME PRESSED (immediate)")
+                if resume_playback():
+                    touch_mgr.hide_resume_button()
+                    # Force transition to playing screen on next iteration
+                    screen_state = None
+                    player_state = None
+                    await asyncio.sleep_ms(200)
+                continue
+
+            elif touch_action and touch_action.startswith("preset_"):
+                preset_num = int(touch_action.split("_")[1])
+                log(">>> PRESET {} PRESSED (immediate)".format(preset_num))
+                if load_preset(preset_num):
+                    touch_mgr.hide_resume_button()
+                    # Force transition to playing screen on next iteration
+                    screen_state = None
+                    player_state = None
+                    await asyncio.sleep_ms(200)
+                continue
+
+        elif screen_state == STATE_PLAYING:
+            touch_action = touch_mgr.handle_touch_on_playing_screen()
+            if touch_action == "show_buttons":
+                # Immediately show buttons without waiting for status
+                log(">>> SHOWING PLAYBACK BUTTONS (immediate)")
+                draw_playback_buttons()
+                presto.update()
+                await asyncio.sleep_ms(50)
+                continue
+
+            elif touch_action == "hide_buttons":
+                log(">>> HIDING PLAYBACK BUTTONS (immediate)")
+                # Force redraw on next iteration
+                last_track_id = None
+                await asyncio.sleep_ms(50)
+                continue
+
+            elif touch_action == "pause":
+                log(">>> PAUSE PRESSED (immediate)")
+                if pause_playback():
+                    touch_mgr.hide_playback_buttons()
+                    # Show resume button and update TouchManager state
+                    touch_mgr.show_resume_button()
+                    # Immediately show clock screen
+                    log("Drawing clock after pause")
+                    draw_clock(show_resume=True, show_presets=False)
+                    presto.update()
+                    screen_state = STATE_CLOCK
+                    await asyncio.sleep_ms(200)
+                continue
+
+            elif touch_action == "next":
+                log(">>> NEXT PRESSED (immediate)")
+                if next_track():
+                    # Force redraw with new track
+                    last_track_id = None
+                    await asyncio.sleep_ms(200)
+                continue
+
+            elif touch_action == "prev":
+                log(">>> PREV PRESSED (immediate)")
+                if previous_track():
+                    # Force redraw with new track
+                    last_track_id = None
+                    await asyncio.sleep_ms(200)
+                continue
+
+        # ============================================
         # FETCH PLAYER STATUS
         # ============================================
 
@@ -76,39 +175,7 @@ async def monitor():
 
         if player_state != "play":
             is_paused = (player_state == "pause")
-
-            # Handle touch on clock screen
-            touch_action = touch_mgr.handle_touch_on_clock_screen()
             buttons_visible = touch_mgr.is_resume_button_visible()
-
-            # Handle touch actions
-            if touch_action == "resume" and is_paused:
-                log(">>> RESUME PRESSED")
-                if resume_playback():
-                    touch_mgr.hide_resume_button()
-                    await asyncio.sleep_ms(500)
-                    # Force transition to playing screen
-                    screen_state = None
-                    player_state = None
-                    continue
-
-            elif touch_action and touch_action.startswith("preset_"):
-                # Handle preset button press
-                preset_num = int(touch_action.split("_")[1])
-                log(">>> PRESET {} PRESSED".format(preset_num))
-                if load_preset(preset_num):
-                    touch_mgr.hide_resume_button()
-                    await asyncio.sleep_ms(500)
-                    # Force transition to playing screen
-                    screen_state = None
-                    player_state = None
-                    continue
-
-            elif touch_action == "show_buttons" or touch_action == "hide_buttons":
-                # Redraw clock with updated button visibility
-                log(">>> REDRAW CLOCK - Buttons visible: {}".format(buttons_visible))
-                draw_clock(show_resume=buttons_visible and is_paused, show_presets=buttons_visible)
-                presto.update()
 
             # Draw clock if not already showing (or needs redrawing)
             if screen_state != STATE_CLOCK:
@@ -118,8 +185,15 @@ async def monitor():
                 screen_state = STATE_CLOCK
                 log("Screen state: CLOCK")
 
-            # Use faster polling when buttons are visible
-            poll_ms = 100 if buttons_visible else (1000 if is_paused else POLL_INTERVAL_SLOW_MS)
+            # Optimize polling on clock screen
+            # When buttons NOT visible, just wait for touches - don't poll status frequently
+            # Touch detection runs independently in TouchManager's poll loop
+            if buttons_visible:
+                poll_ms = 500  # Check status for button timeout
+            else:
+                # No buttons visible - don't need to poll status, just wait for touch
+                # Touch manager handles touch detection independently
+                poll_ms = 5000  # Very slow polling when idle on clock
             await asyncio.sleep_ms(poll_ms)
             continue
 
@@ -133,42 +207,8 @@ async def monitor():
         album = hex_to_text(status.get("Album"))
         track_id = "{}|{}|{}".format(title, artist, album)
 
-        # Handle touch on playing screen
-        touch_action = touch_mgr.handle_touch_on_playing_screen()
+        # Get button visibility state
         buttons_visible = touch_mgr.are_playback_buttons_visible()
-
-        # Handle button actions
-        if touch_action == "pause":
-            log(">>> PAUSE PRESSED")
-            if pause_playback():
-                touch_mgr.hide_playback_buttons()
-                await asyncio.sleep_ms(500)
-                # Force transition to clock
-                screen_state = None
-                continue
-
-        elif touch_action == "next":
-            log(">>> NEXT PRESSED")
-            if next_track():
-                await asyncio.sleep_ms(500)
-                last_track_id = None  # Force redraw
-
-        elif touch_action == "prev":
-            log(">>> PREV PRESSED")
-            if previous_track():
-                await asyncio.sleep_ms(500)
-                last_track_id = None  # Force redraw
-
-        elif touch_action == "show_buttons":
-            # Just draw buttons on top of existing screen
-            log(">>> SHOWING BUTTONS")
-            draw_playback_buttons()
-            presto.update()
-
-        elif touch_action == "hide_buttons":
-            # Force redraw to remove buttons
-            log(">>> HIDING BUTTONS")
-            last_track_id = None  # Force redraw
 
         # Determine if we need to redraw
         track_changed = (track_id != last_track_id)
@@ -218,7 +258,7 @@ async def monitor():
 
         # Determine poll interval
         if buttons_visible:
-            poll_interval = 100  # Very fast when buttons visible
+            poll_interval = 500  # Moderate speed when buttons visible (for timeout)
         else:
             poll_interval = 1000  # 1 second default during playback
 

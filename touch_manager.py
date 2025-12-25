@@ -165,26 +165,27 @@ class TouchManager:
                 break
 
         if self.resume_button_visible:
-            # Buttons visible - check what was touched
+            # Resume button already visible
             if in_resume:
+                # Touched resume button - execute resume
                 log("TouchManager: RESUME button touched")
                 self.resume_button_visible = False
                 return "resume"
             elif in_preset:
+                # Touched preset button (if presets are visible)
                 log("TouchManager: PRESET {} button touched".format(in_preset))
                 self.resume_button_visible = False
                 return "preset_{}".format(in_preset)
             else:
-                # Touch outside buttons - hide them
-                log("TouchManager: Touch outside buttons - hiding")
-                self.resume_button_visible = False
-                return "hide_buttons"
+                # Touch outside resume button - show preset buttons too
+                log("TouchManager: Touch outside resume - showing presets")
+                return "show_presets"
         else:
-            # Buttons hidden - show them on any touch
-            log("TouchManager: Showing clock buttons")
+            # No buttons visible - show resume button only on first touch
+            log("TouchManager: Showing resume button")
             self.resume_button_visible = True
             self.last_resume_button_show_time = time.ticks_ms()
-            return "show_buttons"
+            return "show_resume"
 
     def are_playback_buttons_visible(self):
         """Check if playback buttons should be visible."""
@@ -203,3 +204,10 @@ class TouchManager:
         """Hide resume button."""
         self.resume_button_visible = False
         log("TouchManager: Resume button hidden")
+
+    def show_resume_button(self):
+        """Show resume button and start timeout timer."""
+        import time
+        self.resume_button_visible = True
+        self.last_resume_button_show_time = time.ticks_ms()
+        log("TouchManager: Resume button shown")
