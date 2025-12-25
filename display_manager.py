@@ -16,28 +16,57 @@ from color_utils import get_album_art_colors, sample_jpeg_colors, get_contrast_c
 # =======================
 # DISPLAY INITIALIZATION
 # =======================
+# NOTE: Presto instance is created in main.py and passed via init()
+# This ensures only ONE Presto instance exists
 
-log("Init Presto")
-presto = Presto(ambient_light=False, full_res=True)
-presto.set_backlight(BACKLIGHT_BRIGHTNESS)
-display = presto.display
+presto = None
+display = None
+WIDTH = 480
+HEIGHT = 480
 
-WIDTH, HEIGHT = display.get_bounds()
+def init_display(presto_instance):
+    """
+    Initialize display manager with the Presto instance from main.py.
+    This ensures we use the same Presto instance throughout the app.
+    """
+    global presto, display, WIDTH, HEIGHT
 
-BLACK = display.create_pen(0, 0, 0)
-WHITE = display.create_pen(255, 255, 255)
-YELLOW = display.create_pen(255, 200, 0)
-LIGHT_GRAY = display.create_pen(180, 180, 180)
-GRAY = display.create_pen(140, 140, 140)
+    log("Init Display Manager")
+    presto = presto_instance
+    presto.set_backlight(BACKLIGHT_BRIGHTNESS)
+    display = presto.display
 
-log("Init Vector")
-vector = PicoVector(display)
-vector.set_antialiasing(ANTIALIAS_FAST)
-vector.set_font("Roboto-Medium.af", 14)
-vector.set_font_letter_spacing(100)
-vector.set_font_word_spacing(100)
+    WIDTH, HEIGHT = display.get_bounds()
+    log("Display size: {}x{}".format(WIDTH, HEIGHT))
 
-jpd = jpegdec.JPEG(display)
+    # Initialize display globals
+    global BLACK, WHITE, YELLOW, LIGHT_GRAY, GRAY
+    global vector, jpd
+
+    BLACK = display.create_pen(0, 0, 0)
+    WHITE = display.create_pen(255, 255, 255)
+    YELLOW = display.create_pen(255, 200, 0)
+    LIGHT_GRAY = display.create_pen(180, 180, 180)
+    GRAY = display.create_pen(140, 140, 140)
+
+    log("Init Vector")
+    vector = PicoVector(display)
+    vector.set_antialiasing(ANTIALIAS_FAST)
+    vector.set_font("Roboto-Medium.af", 14)
+    vector.set_font_letter_spacing(100)
+    vector.set_font_word_spacing(100)
+
+    jpd = jpegdec.JPEG(display)
+    log("Display Manager initialized")
+
+# Globals that will be set by init_display()
+BLACK = None
+WHITE = None
+YELLOW = None
+LIGHT_GRAY = None
+GRAY = None
+vector = None
+jpd = None
 
 # =======================
 # DRAWING FUNCTIONS
@@ -47,6 +76,42 @@ def clear_screen():
     """Clear the display to black."""
     display.set_pen(BLACK)
     display.clear()
+
+def show_loading_message(message="Please wait..."):
+    """
+    Show a centered loading message on screen.
+    Draws over existing content without clearing.
+    """
+    # Semi-transparent dark overlay box
+    overlay_pen = display.create_pen(0, 0, 0)
+    display.set_pen(overlay_pen)
+
+    box_width = 300
+    box_height = 80
+    box_x = (WIDTH - box_width) // 2
+    box_y = (HEIGHT - box_height) // 2
+
+    # Draw rounded rectangle background
+    display.rectangle(box_x, box_y, box_width, box_height)
+
+    # Draw border
+    border_pen = display.create_pen(100, 100, 100)
+    display.set_pen(border_pen)
+    display.rectangle(box_x, box_y, box_width, 2)  # Top
+    display.rectangle(box_x, box_y + box_height - 2, box_width, 2)  # Bottom
+    display.rectangle(box_x, box_y, 2, box_height)  # Left
+    display.rectangle(box_x + box_width - 2, box_y, 2, box_height)  # Right
+
+    # Draw text
+    display.set_pen(WHITE)
+    vector.set_font_size(24)
+    text_width = len(message) * 12  # Approximate
+    text_x = (WIDTH - text_width) // 2
+    text_y = HEIGHT // 2 - 8
+    vector.text(message, text_x, text_y)
+
+    presto.update()
+    log("Loading message shown: {}".format(message))
 
 def draw_clock(show_resume=False, show_presets=False):
     """

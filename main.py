@@ -2,17 +2,70 @@
 # WiiM Now Playing / Clock for Pimoroni Presto (MicroPython)
 # ==========================================================
 
+# CRITICAL: Initialize PSRAM first (required for Presto)
+import os
+import psram
+psram.mkramfs()
+
+# Handle launch file (for app launcher compatibility)
+try:
+    with open("/ramfs/launch.txt", "r") as f:
+        result = f.readline()
+except OSError:
+    result = ""
+
+if result.endswith(".py"):
+    os.remove("/ramfs/launch.txt")
+    __import__(result[:-3])
+
+# Core imports
 import gc
+import time
+import machine
 import uasyncio as asyncio
+
+# =======================
+# CREATE SINGLE PRESTO INSTANCE (like sample main.py)
+# =======================
+print("Initializing display...")
+from presto import Presto
+
+# Create THE ONE AND ONLY Presto instance
+presto = Presto(ambient_light=False, full_res=True)
+display = presto.display
+
+# Clear display immediately (prevents garbage on screen)
+BLACK = display.create_pen(0, 0, 0)
+display.set_pen(BLACK)
+display.clear()
+presto.update()
+print("Display cleared")
+
+# Get dimensions
+WIDTH, HEIGHT = display.get_bounds()
+print("Display size: {}x{}".format(WIDTH, HEIGHT))
+
+# =======================
+# INITIALIZE DISPLAY MANAGER WITH OUR PRESTO
+# =======================
+print("Initializing display manager...")
+import display_manager
+display_manager.init_display(presto)  # Pass our presto instance
+print("Display manager initialized")
+
+# Now import everything else
 from config import POLL_INTERVAL_SLOW_MS, POLL_INTERVAL_FAST_MS, TRACK_END_THRESHOLD_S
 from utils import log, hex_to_text
 from wifi import connect_wifi
-from wiim_client import (
+# Import music client adapter (supports both WiiM and Roon)
+from music_client import (
     fetch_player_status, fetch_meta_info,
     pause_playback, resume_playback, next_track, previous_track, load_preset
 )
-from display_manager import draw_clock, draw_track, draw_playback_buttons, presto
+from display_manager import draw_clock, draw_track, draw_playback_buttons, show_loading_message
 from touch_manager import TouchManager
+
+print("All imports complete")
 
 # =======================
 # SCREEN STATES
@@ -42,6 +95,7 @@ async def monitor():
     cached_art_url = None
     art_fetch_failures = 0
     status_failures = 0
+    last_buttons_visible = False
 
     while True:
         gc.collect()
@@ -55,9 +109,15 @@ async def monitor():
         if screen_state == STATE_CLOCK:
             touch_action = touch_mgr.handle_touch_on_clock_screen()
             if touch_action == "show_resume":
-                # First touch - show only resume button
-                log(">>> SHOWING RESUME BUTTON (immediate)")
-                draw_clock(show_resume=player_state == "pause", show_presets=False)
+                # First touch - show appropriate buttons based on player state
+                if player_state == "pause":
+                    # Paused: show resume button
+                    log(">>> SHOWING RESUME BUTTON (immediate)")
+                    draw_clock(show_resume=True, show_presets=False)
+                else:
+                    # Stopped: show preset buttons to start playback
+                    log(">>> SHOWING PRESET BUTTONS (immediate, stopped state)")
+                    draw_clock(show_resume=False, show_presets=True)
                 presto.update()
                 await asyncio.sleep_ms(50)
                 continue
@@ -79,6 +139,8 @@ async def monitor():
 
             elif touch_action == "resume" and player_state == "pause":
                 log(">>> RESUME PRESSED (immediate)")
+                # Show loading message immediately for user feedback
+                show_loading_message("Resuming...")
                 if resume_playback():
                     touch_mgr.hide_resume_button()
                     # Force transition to playing screen on next iteration
@@ -90,6 +152,8 @@ async def monitor():
             elif touch_action and touch_action.startswith("preset_"):
                 preset_num = int(touch_action.split("_")[1])
                 log(">>> PRESET {} PRESSED (immediate)".format(preset_num))
+                # Show loading message immediately for user feedback
+                show_loading_message("Loading preset...")
                 if load_preset(preset_num):
                     touch_mgr.hide_resume_button()
                     # Force transition to playing screen on next iteration
@@ -105,13 +169,14 @@ async def monitor():
                 log(">>> SHOWING PLAYBACK BUTTONS (immediate)")
                 draw_playback_buttons()
                 presto.update()
-                await asyncio.sleep_ms(50)
+                # Give UI time to settle before continuing
+                await asyncio.sleep_ms(100)
                 continue
 
             elif touch_action == "hide_buttons":
                 log(">>> HIDING PLAYBACK BUTTONS (immediate)")
-                # Force redraw on next iteration
-                last_track_id = None
+                # Don't force redraw - just let normal flow redraw without buttons
+                # on next iteration
                 await asyncio.sleep_ms(50)
                 continue
 
@@ -152,17 +217,21 @@ async def monitor():
         status = fetch_player_status()
         if not status:
             status_failures += 1
-            log("Status fetch failed ({}/3)".format(status_failures))
+            log("Status fetch failed ({}/4) - keeping current display".format(status_failures))
 
-            if status_failures >= 3:
-                # Show clock on repeated failures
+            if status_failures >= 4:
+                # Connection really lost after 4 failures - show clock
                 if screen_state != STATE_CLOCK:
-                    log("Connection lost - showing clock")
+                    log("Connection lost after {} failures - switching to clock".format(status_failures))
                     draw_clock(show_resume=False)
                     screen_state = STATE_CLOCK
                 status_failures = 0
+            else:
+                # Temporary failure - keep current display and retry quickly
+                log("Retrying in 500ms (attempt {}/4)...".format(status_failures + 1))
 
-            await asyncio.sleep_ms(POLL_INTERVAL_SLOW_MS)
+            # Don't sleep too long on failure - need to stay responsive to touches
+            await asyncio.sleep_ms(500)
             continue
 
         status_failures = 0
@@ -214,15 +283,16 @@ async def monitor():
         track_changed = (track_id != last_track_id)
         returning_from_clock = (screen_state != STATE_PLAYING)
         art_needs_retry = (last_art_url == False and art_fetch_failures < 3)
+        buttons_changed = (buttons_visible != last_buttons_visible)
 
-        needs_redraw = track_changed or returning_from_clock or art_needs_retry
+        needs_redraw = track_changed or returning_from_clock or art_needs_retry or buttons_changed
 
         if needs_redraw:
-            log("Redrawing: track_changed={}, from_clock={}, art_retry={}".format(
-                track_changed, returning_from_clock, art_needs_retry
+            log("Redrawing: track_changed={}, from_clock={}, art_retry={}, buttons_changed={}".format(
+                track_changed, returning_from_clock, art_needs_retry, buttons_changed
             ))
 
-            # Fetch album art URL if needed
+            # Fetch album art URL only if track actually changed
             if track_changed or returning_from_clock or cached_art_url is None:
                 meta = fetch_meta_info()
                 if meta:
@@ -240,6 +310,7 @@ async def monitor():
 
             # Update state
             last_track_id = track_id
+            last_buttons_visible = buttons_visible
             screen_state = STATE_PLAYING
             log("Screen state: PLAYING")
 
@@ -258,11 +329,11 @@ async def monitor():
 
         # Determine poll interval
         if buttons_visible:
-            poll_interval = 500  # Moderate speed when buttons visible (for timeout)
+            poll_interval = 2000  # Check every 2 seconds for button timeout
         else:
-            poll_interval = 1000  # 1 second default during playback
+            poll_interval = 10000  # 10 seconds default during playback (reduced network load)
 
-            # Check for track end (fast polling)
+            # Check for track end (switch to fast polling near end of track)
             try:
                 totlen = int(status.get("totlen", 0))
                 curpos = int(status.get("curpos", 0))
@@ -270,7 +341,8 @@ async def monitor():
                 if totlen > 0 and curpos >= 0:
                     remaining_s = (totlen - curpos) // 1000
                     if remaining_s <= TRACK_END_THRESHOLD_S:
-                        poll_interval = POLL_INTERVAL_FAST_MS
+                        log("Near end of track ({} seconds left), switching to fast polling".format(remaining_s))
+                        poll_interval = POLL_INTERVAL_FAST_MS  # Fast polling near track end
 
             except (ValueError, TypeError):
                 pass
@@ -278,32 +350,127 @@ async def monitor():
         await asyncio.sleep_ms(poll_interval)
 
 # =======================
-# BOOT
+# BOOT HELPER FUNCTIONS
+# =======================
+
+def show_boot_message(message, color=(255, 255, 255)):
+    """Show a boot status message on screen."""
+    try:
+        display.set_pen(BLACK)
+        display.clear()
+        pen = display.create_pen(*color)
+        display.set_pen(pen)
+        display.text(message, 10, HEIGHT // 2 - 10, WIDTH - 20, 3)
+        presto.update()
+    except Exception as e:
+        print("Failed to show boot message: {}".format(e))
+
+def show_wifi_error(wifi_error):
+    """Show WiFi error with SSID info and halt."""
+    print("=" * 50)
+    print("WiFi Connection Failed!")
+    print("=" * 50)
+
+    try:
+        from secrets import WIFI_SSID, WIIM_IP
+        print("SSID: {}".format(WIFI_SSID))
+        print("WiiM IP: {}".format(WIIM_IP))
+
+        # Draw error screen
+        red_pen = display.create_pen(255, 0, 0)
+        white_pen = display.create_pen(255, 255, 255)
+
+        display.set_pen(red_pen)
+        display.clear()
+        display.set_pen(white_pen)
+
+        display.text("WiFi Failed!", 10, 10, 460, 3)
+        display.text("SSID: {}".format(WIFI_SSID), 10, 50, 460, 2)
+        display.text("WiiM IP: {}".format(WIIM_IP), 10, 80, 460, 2)
+        display.text("Check secrets.py", 10, 120, 460, 2)
+        display.text("Error: {}".format(str(wifi_error)[:30]), 10, 150, 460, 2)
+        display.text("Power cycle to retry", 10, 400, 460, 2)
+
+        print("Error screen created")
+    except Exception as display_error:
+        print("Failed to show error: {}".format(display_error))
+
+    # Keep display updated in loop (like sample main.py)
+    print("Halting... (keeping display updated)")
+    while True:
+        presto.update()
+        time.sleep(1)
+
+def show_error(error_msg):
+    """Show generic error on screen and halt."""
+    print("FATAL ERROR: {}".format(error_msg))
+    try:
+        red_pen = display.create_pen(255, 0, 0)
+        white_pen = display.create_pen(255, 255, 255)
+
+        display.set_pen(red_pen)
+        display.clear()
+        display.set_pen(white_pen)
+        display.text("ERROR:", 10, 10, WIDTH - 20, 3)
+        display.text(str(error_msg)[:100], 10, 40, WIDTH - 20, 2)
+        display.text("Power cycle to retry", 10, HEIGHT - 30, WIDTH - 20, 2)
+    except:
+        pass
+
+    # Keep display updated
+    while True:
+        presto.update()
+        time.sleep(1)
+
+# =======================
+# BOOT SEQUENCE
 # =======================
 
 def main():
-    """Boot sequence."""
+    """Boot sequence with visual feedback."""
     try:
-        log("Boot")
-        connect_wifi()
+        # Show we're starting
+        show_boot_message("Starting...")
+        time.sleep(0.5)
+
+        log("Boot sequence starting")
+
+        # Show WiFi connection message
+        show_boot_message("Connecting to WiFi...")
+        time.sleep(0.5)
+
+        # Connect to WiFi with error handling
+        try:
+            connect_wifi()
+            log("WiFi connected")
+        except Exception as wifi_error:
+            show_wifi_error(wifi_error)
+
+        # Show initial clock
+        show_boot_message("Loading...")
+        time.sleep(0.3)
         draw_clock()
+        log("Initial screen drawn")
+
+        # Start main loop
         log("Starting monitor loop")
         asyncio.run(monitor())
-    except Exception as e:
-        # Show error on screen if possible
-        log("FATAL ERROR: {}".format(e))
-        try:
-            from display_manager import display, presto
-            display.set_pen(display.create_pen(255, 0, 0))
-            display.clear()
-            display.set_pen(display.create_pen(255, 255, 255))
-            display.text("ERROR: {}".format(str(e)[:50]), 10, 10, 460, 3)
-            presto.update()
-        except:
-            pass
-        # Keep running so we can see the error
-        import time
-        while True:
-            time.sleep(1)
 
+    except KeyboardInterrupt:
+        log("Keyboard interrupt")
+        show_boot_message("Stopped", (255, 200, 0))
+        time.sleep(2)
+
+    except MemoryError as e:
+        show_error("Out of memory: {}".format(e))
+
+    except ImportError as e:
+        show_error("Import failed: {}".format(e))
+
+    except Exception as e:
+        import sys
+        sys.print_exception(e)
+        show_error("Error: {}".format(e))
+
+# Run main
 main()

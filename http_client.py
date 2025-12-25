@@ -42,7 +42,13 @@ def _get_or_create_connection(host, port, use_ssl):
     if (_cached_connection and
         _cached_connection_host == host and
         _cached_connection_port == port):
-        # Connection exists, return it
+        # Connection exists, just re-apply timeout and use it
+        # Note: WiiM device may close connections, we'll detect that on send/recv
+        try:
+            _cached_connection.settimeout(SOCKET_TIMEOUT_S)
+        except:
+            pass  # If settimeout fails, socket probably closed, will detect on send
+        log("Reusing connection")
         return _cached_connection
 
     # Close old connection if exists
@@ -58,6 +64,7 @@ def _get_or_create_connection(host, port, use_ssl):
     addr = socket.getaddrinfo(host, port)[0][-1]
     s = socket.socket()
     s.settimeout(SOCKET_TIMEOUT_S)
+    log("Connecting with timeout: {}s".format(SOCKET_TIMEOUT_S))
     s.connect(addr)
 
     # Wrap with SSL if needed
@@ -121,13 +128,23 @@ def http_get(path):
             "Connection: keep-alive\r\n\r\n"
         ).format(path, host)
 
-        s.send(req.encode())
+        # Try to send - this will fail immediately if connection is stale
+        try:
+            s.send(req.encode())
+        except OSError as e:
+            # Connection reset or broken pipe - connection is stale
+            log("Send failed (err {}), connection stale".format(e.errno if hasattr(e, 'errno') else e))
+            close_connection()
+            # Retry once with new connection
+            s = _get_or_create_connection(host, port, use_ssl)
+            s.send(req.encode())
 
         data = b""
         while True:
             try:
                 chunk = s.recv(1024)
                 if not chunk:
+                    # Connection closed by remote
                     break
                 data += chunk
                 # Check if we have complete response (look for end of headers + body)
@@ -136,8 +153,21 @@ def http_get(path):
                     # Check if we have received all data
                     if len(data) > 100 and data[-1:] == b"}":
                         break
-            except OSError:
+            except OSError as e:
+                # Check error type
+                err_num = e.errno if hasattr(e, 'errno') else str(e)
+                log("Recv error: {}".format(err_num))
+                # Connection error - invalidate cache
+                if err_num in (-104, 104, 'ECONNRESET', 'EPIPE', -1):
+                    log("Connection reset, clearing cache")
+                    close_connection()
                 break
+
+        # Check for empty response (connection problem)
+        if not data or len(data) < 20:
+            log("Empty HTTP response")
+            close_connection()
+            return None
 
         return data
 
