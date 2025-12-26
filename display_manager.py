@@ -155,6 +155,17 @@ def draw_clock(show_resume=False, show_presets=False):
         desc_text = weather["description"]
         vector.text(desc_text, margin, 390)
 
+        # Rain info if available
+        if weather.get("rain"):
+            display.set_pen(YELLOW) # Use yellow to match temperature or maybe light blue if I had it
+            vector.set_font_size(32)
+            vector.text(weather["rain"], WIDTH - 150, 390)
+        elif weather.get("clouds") is not None and weather.get("clouds") > 0:
+            # Show cloud coverage as a proxy for likelihood if no actual rain
+            display.set_pen(GRAY)
+            vector.set_font_size(24)
+            vector.text("Clouds: {}%".format(weather["clouds"]), WIDTH - 150, 390)
+
         # Location (medium, at bottom) - medium gray
         display.set_pen(GRAY)
         vector.set_font_size(32)

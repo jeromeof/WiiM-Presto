@@ -21,6 +21,15 @@ def connect_wifi():
 
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
+    
+    # Disable power management to improve stability on Pico W / CYW43
+    # 0xa11140 is the value for "performance" mode (disables power saving)
+    try:
+        wlan.config(pm=0xa11140)
+        log("WiFi power management disabled (performance mode)")
+    except Exception as e:
+        log("Failed to set WiFi PM: {}".format(e))
+        
     log("WLAN interface activated")
 
     # Scan for networks (helps debug if SSID not found)
@@ -49,27 +58,32 @@ def connect_wifi():
             log("=== Connection attempt {} of {} ===".format(retry + 1, max_retries))
 
             if retry > 0:
-                log("Performing WiFi reset...")
-                # Disconnect and reset between retries
+                log("Performing deep WiFi reset...")
                 try:
                     wlan.disconnect()
-                    log("Disconnected")
+                    wlan.active(False)
+                    time.sleep(2)  # Increased delay
+                
+                    # Re-create the WLAN object - sometimes helps with stuck driver
+                    wlan = network.WLAN(network.STA_IF)
+                    wlan.active(True)
+                    
+                    # Ensure PM is disabled after reset
+                    try:
+                        wlan.config(pm=0xa11140)
+                    except:
+                        pass
+                        
+                    time.sleep(2)  # Increased delay
+                    log("WiFi interface re-initialized")
                 except Exception as e:
-                    log("Disconnect error: {}".format(e))
-
-                time.sleep(1)
-                wlan.active(False)
-                log("WiFi deactivated")
-                time.sleep(1)
-                wlan.active(True)
-                log("WiFi reactivated")
-                time.sleep(1)
+                    log("Reset error: {}".format(e))
 
             log("Calling wlan.connect()...")
             wlan.connect(WIFI_SSID, WIFI_PASSWORD)
-            log("Connection initiated, waiting for status...")
-
-            # Wait up to 15 seconds for this attempt
+        
+            # Wait up to 30 seconds for this attempt
+            consecutive_nonet = 0
             for i in range(30):
                 status = wlan.status()
 
@@ -81,29 +95,33 @@ def connect_wifi():
                     log("Connection successful!")
                     break
 
-                # Status codes:
-                # -1 = Error/connection lost
-                # 0 = STAT_IDLE
-                # 1 = STAT_CONNECTING
-                # 2 = STAT_WRONG_PASSWORD
-                # 3 = STAT_NO_AP_FOUND
-                # 4 = STAT_CONNECT_FAIL
-                # 5 = STAT_GOT_IP (but should be connected by now)
+                # Status codes (CYW43 on Pico W / Presto):
+                #  3 = CYW43_LINK_UP (Connected)
+                #  0 = CYW43_LINK_DOWN (Disconnected)
+                #  1 = CYW43_LINK_JOIN (Connecting)
+                #  2 = CYW43_LINK_NOIP (Connected, waiting for IP)
+                # -1 = CYW43_LINK_FAIL (Failed)
+                # -2 = CYW43_LINK_NONET (Network not found)
+                # -3 = CYW43_LINK_BADAUTH (Wrong password)
 
-                if status == -1:
-                    log("Status -1: Connection error, breaking to retry...")
-                    break  # Break inner loop to retry
-                elif status == 2:
-                    log("ERROR: Wrong password!")
+                if status == -3:
+                    log("ERROR: Wrong password! (status: -3)")
                     raise RuntimeError("Wrong WiFi password")
-                elif status == 3:
-                    log("ERROR: Network not found!")
-                    raise RuntimeError("WiFi network '{}' not found".format(WIFI_SSID))
-                elif status == 4:
-                    log("ERROR: Connection failed!")
-                    break  # Try again
+            
+                if status == -2:
+                    consecutive_nonet += 1
+                    # If we get NONET multiple times in a row, then break and try full reset
+                    if consecutive_nonet >= 3:
+                        log("ERROR: Network not found persistently (status: -2)")
+                        break
+                else:
+                    consecutive_nonet = 0
 
-                time.sleep(0.5)
+                if status < 0 and status not in (-1, -2): 
+                    log("WiFi error: status {}".format(status))
+                    break
+
+                time.sleep(1.0)
 
             # Check if we succeeded after inner loop
             if wlan.isconnected():

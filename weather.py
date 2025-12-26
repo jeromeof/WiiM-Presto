@@ -60,7 +60,20 @@ def get_weather():
         temp = data["main"]["temp"]
         description = data["weather"][0]["description"]
         location = data["name"]
-
+        
+        # Check for rain (likelihood or current)
+        # OWM current weather doesn't have 'pop', but may have 'rain'
+        # Forecast has 'pop'. Let's check for 'pop' in case it's there or just use rain volume.
+        rain_info = None
+        if "rain" in data:
+            if "1h" in data["rain"]:
+                rain_info = "Rain: {}mm".format(data["rain"]["1h"])
+            elif "3h" in data["rain"]:
+                rain_info = "Rain: {}mm".format(data["rain"]["3h"])
+        
+        # Also check for clouds as a fallback for "likelihood" if no rain field
+        clouds = data.get("clouds", {}).get("all", 0)
+        
         # Format temperature
         temp_unit = "C" if WEATHER_UNITS == "metric" else "F"
 
@@ -70,7 +83,9 @@ def get_weather():
         weather_info = {
             "temperature": "{:.0f}°{}".format(temp, temp_unit),
             "description": desc_formatted,
-            "location": location
+            "location": location,
+            "rain": rain_info,
+            "clouds": clouds
         }
 
         # Update cache
