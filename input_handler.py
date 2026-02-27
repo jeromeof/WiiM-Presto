@@ -25,21 +25,40 @@ next_button = Button(320, BUTTON_Y, BUTTON_WIDTH, BUTTON_HEIGHT)
 # Clock screen - Resume button (centered at bottom)
 resume_button = Button(140, 400, 200, 70)
 
-# Clock screen - Preset buttons (row above resume button)
-# 4 presets in a single row: 90px wide, 50px tall, 20px spacing
-PRESET_BUTTON_Y = 330
-PRESET_BUTTON_WIDTH = 90
-PRESET_BUTTON_HEIGHT = 50
-PRESET_BUTTON_SPACING = 20
-PRESET_START_X = 30
+# Clock screen - Preset buttons (vertical list, dynamically built)
+# Rebuilt by display_manager when preset labels are known
+PRESET_BUTTON_START_Y = 20   # Top of first button
+PRESET_BUTTON_HEIGHT = 70    # Tall enough for easy tapping
+PRESET_BUTTON_GAP = 12       # Gap between buttons
+PRESET_BUTTON_MARGIN_X = 20  # Left margin
 
-preset_button_1 = Button(PRESET_START_X, PRESET_BUTTON_Y, PRESET_BUTTON_WIDTH, PRESET_BUTTON_HEIGHT)
-preset_button_2 = Button(PRESET_START_X + PRESET_BUTTON_WIDTH + PRESET_BUTTON_SPACING, PRESET_BUTTON_Y, PRESET_BUTTON_WIDTH, PRESET_BUTTON_HEIGHT)
-preset_button_3 = Button(PRESET_START_X + (PRESET_BUTTON_WIDTH + PRESET_BUTTON_SPACING) * 2, PRESET_BUTTON_Y, PRESET_BUTTON_WIDTH, PRESET_BUTTON_HEIGHT)
-preset_button_4 = Button(PRESET_START_X + (PRESET_BUTTON_WIDTH + PRESET_BUTTON_SPACING) * 3, PRESET_BUTTON_Y, PRESET_BUTTON_WIDTH, PRESET_BUTTON_HEIGHT)
+# Populated by rebuild_preset_buttons(); both lists are parallel.
+preset_buttons = []         # Button objects (touch areas)
+preset_button_numbers = []  # Corresponding WiiM preset numbers (1-based)
 
-# List of all preset buttons for easy iteration
-preset_buttons = [preset_button_1, preset_button_2, preset_button_3, preset_button_4]
+
+def rebuild_preset_buttons(labels, button_width):
+    """
+    Rebuild preset button touch areas for a vertical layout.
+    Only creates buttons for non-None labels.
+    Stores the original WiiM preset number alongside each button.
+
+    Args:
+        labels: List of 4 label strings (None = slot unused), index 0 = preset 1
+        button_width: Width in pixels for each button
+    """
+    global preset_buttons, preset_button_numbers
+    preset_buttons = []
+    preset_button_numbers = []
+    y = PRESET_BUTTON_START_Y
+    for wiim_num, label in enumerate(labels, start=1):
+        if label is not None:
+            preset_buttons.append(
+                Button(PRESET_BUTTON_MARGIN_X, y, button_width, PRESET_BUTTON_HEIGHT)
+            )
+            preset_button_numbers.append(wiim_num)
+            y += PRESET_BUTTON_HEIGHT + PRESET_BUTTON_GAP
+    log("Rebuilt {} preset buttons (width={})".format(len(preset_buttons), button_width))
 
 # =======================
 # BUTTON CHECK FUNCTIONS

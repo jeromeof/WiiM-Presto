@@ -68,6 +68,20 @@ GRAY = None
 vector = None
 jpd = None
 
+# Preset labels fetched from WiiM (overrides config.PRESET_LABELS when set)
+_fetched_preset_labels = None
+
+def set_preset_labels(labels):
+    """Store preset names and rebuild touch areas to match the new labels."""
+    global _fetched_preset_labels
+    _fetched_preset_labels = labels
+    log("Preset labels updated: {}".format(labels))
+
+    # Use full available width so tap targets are large and easy to hit
+    from input_handler import rebuild_preset_buttons, PRESET_BUTTON_MARGIN_X
+    button_width = WIDTH - 2 * PRESET_BUTTON_MARGIN_X
+    rebuild_preset_buttons(labels, button_width)
+
 # =======================
 # DRAWING FUNCTIONS
 # =======================
@@ -475,53 +489,65 @@ def draw_resume_button():
 
 def draw_preset_buttons(preset_labels=None):
     """
-    Draw preset buttons on clock screen.
-    Shows 4 preset buttons in a row above the resume button.
+    Draw preset buttons as a vertical list on the clock screen.
+    Width is scaled to fit the longest label.
 
     Args:
-        preset_labels: List of 4 preset labels (or None to use config defaults)
+        preset_labels: List of 4 preset labels (or None to use stored/config labels)
     """
-    from input_handler import preset_buttons
+    from input_handler import (
+        preset_buttons, preset_button_numbers,
+        rebuild_preset_buttons,
+        PRESET_BUTTON_HEIGHT, PRESET_BUTTON_GAP,
+        PRESET_BUTTON_MARGIN_X, PRESET_BUTTON_START_Y
+    )
     from config import PRESET_LABELS
 
     if preset_labels is None:
-        preset_labels = PRESET_LABELS
+        preset_labels = _fetched_preset_labels if _fetched_preset_labels is not None else PRESET_LABELS
 
-    # Button styling - darker theme to match other buttons
-    button_bg = display.create_pen(40, 40, 40)  # Dark gray
-    button_border = display.create_pen(100, 100, 100)  # Medium gray border
-    button_text = WHITE
+    # Build list of (wiim_number, label) for active presets only
+    active = [(i + 1, l) for i, l in enumerate(preset_labels) if l is not None]
+    if not active:
+        return
 
-    # Helper to draw one preset button
-    def draw_preset_button(btn, label, index):
-        if label is None:
-            return  # Skip disabled presets
+    font_size = 26
 
-        x, y, w, h = btn.bounds
+    button_width = WIDTH - 2 * PRESET_BUTTON_MARGIN_X  # Full available width
 
-        # Draw background
+    # Rebuild touch areas if not yet initialised
+    if not preset_buttons:
+        rebuild_preset_buttons(preset_labels, button_width)
+
+    # Button styling
+    button_bg     = display.create_pen(30, 30, 30)
+    button_border = display.create_pen(120, 120, 120)
+
+    vector.set_font_size(font_size)
+
+    y = PRESET_BUTTON_START_Y
+    for _, label in active:
+        x = PRESET_BUTTON_MARGIN_X
+        h = PRESET_BUTTON_HEIGHT
+        w = button_width
+
+        # Background
         display.set_pen(button_bg)
         display.rectangle(x, y, w, h)
 
-        # Draw border (1px outline)
+        # Border (2px)
         display.set_pen(button_border)
-        display.rectangle(x, y, w, 1)  # Top
-        display.rectangle(x, y, 1, h)  # Left
-        display.rectangle(x + w - 1, y, 1, h)  # Right
-        display.rectangle(x, y + h - 1, w, 1)  # Bottom
+        display.rectangle(x, y, w, 2)          # Top
+        display.rectangle(x, y, 2, h)          # Left
+        display.rectangle(x + w - 2, y, 2, h)  # Right
+        display.rectangle(x, y + h - 2, w, 2)  # Bottom
 
-        # Draw centered text
-        display.set_pen(button_text)
-        vector.set_font_size(18)
-
-        # Center text in button (approximate)
-        # Text positioning: center horizontally in button
-        text_x = x + 5
-        text_y = y + 32
+        # Label — vertically centred in button
+        display.set_pen(WHITE)
+        text_x = x + 16
+        text_y = y + (h + font_size) // 2
         vector.text(label, text_x, text_y)
 
-    # Draw all 4 preset buttons
-    for i, (btn, label) in enumerate(zip(preset_buttons, preset_labels)):
-        draw_preset_button(btn, label, i + 1)
+        y += h + PRESET_BUTTON_GAP
 
-    log("Preset buttons drawn")
+    log("Preset buttons drawn ({} buttons, width={})".format(len(active), button_width))

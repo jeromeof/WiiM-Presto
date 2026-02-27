@@ -56,13 +56,14 @@ print("Display manager initialized")
 # Now import everything else
 from config import POLL_INTERVAL_SLOW_MS, POLL_INTERVAL_FAST_MS, TRACK_END_THRESHOLD_S
 from utils import log, hex_to_text
-from wifi import connect_wifi
+from wifi import connect_wifi, sync_ntp
 # Import music client adapter (supports both WiiM and Roon)
 from music_client import (
     fetch_player_status, fetch_meta_info,
-    pause_playback, resume_playback, next_track, previous_track, load_preset
+    pause_playback, resume_playback, next_track, previous_track, load_preset,
+    fetch_presets
 )
-from display_manager import draw_clock, draw_track, draw_playback_buttons, show_loading_message
+from display_manager import draw_clock, draw_track, draw_playback_buttons, show_loading_message, set_preset_labels
 from touch_manager import TouchManager
 from weather import get_weather
 
@@ -105,6 +106,10 @@ async def monitor():
     last_weather_fetch = 0
     last_wifi_check = 0
     wifi_fail_count = 0
+    last_ntp_sync = time.ticks_ms()   # Already synced at boot; resync after 1 hour
+    last_preset_fetch = 0              # Fetch presets soon after boot, then every 30 min
+    NTP_SYNC_INTERVAL_MS = 3600 * 1000
+    PRESET_REFRESH_INTERVAL_MS = 1800 * 1000
     
     import network
     wlan = network.WLAN(network.STA_IF)
@@ -150,6 +155,22 @@ async def monitor():
                 wifi_fail_count = 0
 
         # ============================================
+        # HOURLY NTP RESYNC
+        # ============================================
+        if time.ticks_diff(now, last_ntp_sync) >= NTP_SYNC_INTERVAL_MS:
+            last_ntp_sync = now
+            sync_ntp()
+
+        # ============================================
+        # PERIODIC PRESET REFRESH (every 30 min)
+        # ============================================
+        if time.ticks_diff(now, last_preset_fetch) >= PRESET_REFRESH_INTERVAL_MS:
+            last_preset_fetch = now
+            labels = fetch_presets()
+            if labels:
+                set_preset_labels(labels)
+
+        # ============================================
         # PRIORITY: HANDLE TOUCHES FIRST!
         # ============================================
         # Check for touches BEFORE doing any slow API calls
@@ -188,29 +209,29 @@ async def monitor():
 
             elif touch_action == "resume" and player_state == "pause":
                 log(">>> RESUME PRESSED (immediate)")
-                # Show loading message immediately for user feedback
                 show_loading_message("Resuming...")
                 if resume_playback():
                     touch_mgr.hide_resume_button()
-                    # Force transition to playing screen on next iteration
                     screen_state = None
                     player_state = None
-                    last_status_fetch = 0 # Fetch status immediately
-                    await asyncio.sleep_ms(200)
+                    # WiiM needs a moment to resume — wait before polling
+                    show_loading_message("Starting...")
+                    await asyncio.sleep_ms(2000)
+                    last_status_fetch = 0
                 continue
 
             elif touch_action and touch_action.startswith("preset_"):
                 preset_num = int(touch_action.split("_")[1])
                 log(">>> PRESET {} PRESSED (immediate)".format(preset_num))
-                # Show loading message immediately for user feedback
                 show_loading_message("Loading preset...")
                 if load_preset(preset_num):
                     touch_mgr.hide_resume_button()
-                    # Force transition to playing screen on next iteration
                     screen_state = None
                     player_state = None
-                    last_status_fetch = 0 # Fetch status immediately
-                    await asyncio.sleep_ms(200)
+                    # WiiM needs time to buffer and start the stream
+                    show_loading_message("Starting stream...")
+                    await asyncio.sleep_ms(3000)
+                    last_status_fetch = 0
                 continue
 
         elif screen_state == STATE_PLAYING:
@@ -301,9 +322,10 @@ async def monitor():
                         screen_state = STATE_CLOCK
                     status_failures = 0
                 else:
-                    # Temporary failure - keep current display and retry quickly
-                    # Actually, since we are in a high-frequency loop, we can just let it retry next iteration
-                    last_status_fetch = now - poll_interval_ms + 500 # retry in 500ms
+                    # Back off retry: 3s after first fail, up to 15s — avoids socket exhaustion
+                    backoff_ms = min(3000 * status_failures, 15000)
+                    last_status_fetch = now - poll_interval_ms + backoff_ms
+                    gc.collect()  # Reclaim any leaked socket buffers
                 
                 await asyncio.sleep_ms(50)
                 continue
@@ -470,11 +492,20 @@ def show_wifi_error(wifi_error):
     except Exception as display_error:
         print("Failed to show error: {}".format(display_error))
 
-    # Keep display updated in loop (like sample main.py)
-    print("Halting... (keeping display updated)")
-    while True:
-        presto.update()
-        time.sleep(1)
+    # Wait 60 seconds then return so the caller can retry
+    print("Waiting 60s before retry...")
+    for remaining in range(60, 0, -10):
+        try:
+            display.set_pen(display.create_pen(255, 0, 0))
+            display.clear()
+            display.set_pen(display.create_pen(255, 255, 255))
+            display.text("WiFi Failed!", 10, 10, 460, 3)
+            display.text("SSID: {}".format(WIFI_SSID), 10, 50, 460, 2)
+            display.text("Retrying in {}s...".format(remaining), 10, 190, 460, 2)
+            presto.update()
+        except Exception:
+            pass
+        time.sleep(10)
 
 def show_error(error_msg):
     """Show generic error on screen and halt."""
@@ -510,16 +541,29 @@ def main():
 
         log("Boot sequence starting")
 
-        # Show WiFi connection message
-        show_boot_message("Connecting to WiFi...")
-        time.sleep(0.5)
+        # Connect to WiFi - keep retrying every 60s if router is down
+        while True:
+            show_boot_message("Connecting to WiFi...")
+            time.sleep(0.5)
+            try:
+                connect_wifi()
+                log("WiFi connected")
+                break
+            except Exception as wifi_error:
+                show_wifi_error(wifi_error)
+                log("Retrying WiFi connection...")
 
-        # Connect to WiFi with error handling
-        try:
-            connect_wifi()
-            log("WiFi connected")
-        except Exception as wifi_error:
-            show_wifi_error(wifi_error)
+        # Fetch preset names from WiiM; fall back to config defaults so buttons
+        # are always initialised with correct touch areas before the first draw.
+        show_boot_message("Loading presets...")
+        from config import PRESET_LABELS as _default_labels
+        labels = fetch_presets()
+        if labels:
+            log("Presets loaded from WiiM: {}".format(labels))
+        else:
+            log("Preset fetch failed, using config defaults")
+            labels = _default_labels
+        set_preset_labels(labels)
 
         # Show initial clock
         show_boot_message("Loading...")

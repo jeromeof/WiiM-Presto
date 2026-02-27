@@ -31,21 +31,22 @@ def _create_ssl_context():
 
     return ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT) if hasattr(ssl, 'SSLContext') else None
 
-def _get_or_create_connection(host, port, use_ssl):
+def _get_or_create_connection(host, port, use_ssl, timeout=None):
     """
     Get cached connection or create new one.
     Reuses existing connection if host/port match.
     """
     global _cached_connection, _cached_connection_host, _cached_connection_port
 
+    if timeout is None:
+        timeout = SOCKET_TIMEOUT_S
+
     # Check if we can reuse existing connection
     if (_cached_connection and
         _cached_connection_host == host and
         _cached_connection_port == port):
-        # Connection exists, just re-apply timeout and use it
-        # Note: WiiM device may close connections, we'll detect that on send/recv
         try:
-            _cached_connection.settimeout(SOCKET_TIMEOUT_S)
+            _cached_connection.settimeout(timeout)
         except:
             pass  # If settimeout fails, socket probably closed, will detect on send
         log("Reusing connection")
@@ -63,9 +64,13 @@ def _get_or_create_connection(host, port, use_ssl):
     # Create new connection
     addr = socket.getaddrinfo(host, port)[0][-1]
     s = socket.socket()
-    s.settimeout(SOCKET_TIMEOUT_S)
-    log("Connecting with timeout: {}s".format(SOCKET_TIMEOUT_S))
-    s.connect(addr)
+    s.settimeout(timeout)
+    log("Connecting with timeout: {}s".format(timeout))
+    try:
+        s.connect(addr)
+    except Exception:
+        s.close()  # Always release socket on connect failure — prevents ENOMEM
+        raise
 
     # Wrap with SSL if needed
     if use_ssl:
@@ -94,88 +99,96 @@ def close_connection():
             pass
         _cached_connection = None
 
-def http_get(path):
+def http_get(path, timeout=None):
     """
     Perform HTTP GET request using raw socket.
     Supports both proxy mode and direct HTTPS connection to WiiM.
     Returns raw response data (including headers).
     Reuses existing connections for performance.
+    Retries once with a fresh connection on any stale-connection failure.
 
     Args:
         path: URL path to request
+        timeout: Socket timeout in seconds (defaults to SOCKET_TIMEOUT_S)
 
     Returns:
         bytes: Raw HTTP response data
     """
+    if timeout is None:
+        timeout = SOCKET_TIMEOUT_S
+
     if USE_PROXY:
-        # Proxy mode (original behavior)
         host = PROXY_HOST
         port = PROXY_PORT
         use_ssl = False
     else:
-        # Direct connection to WiiM
         host = WIIM_IP
         port = WIIM_PORT
         use_ssl = True
 
-    try:
-        # Get or create connection (reuses if possible)
-        s = _get_or_create_connection(host, port, use_ssl)
+    req = (
+        "GET {} HTTP/1.1\r\n"
+        "Host: {}\r\n"
+        "Connection: keep-alive\r\n\r\n"
+    ).format(path, host)
 
-        req = (
-            "GET {} HTTP/1.1\r\n"
-            "Host: {}\r\n"
-            "Connection: keep-alive\r\n\r\n"
-        ).format(path, host)
-
-        # Try to send - this will fail immediately if connection is stale
+    for attempt in range(2):
         try:
-            s.send(req.encode())
-        except OSError as e:
-            # Connection reset or broken pipe - connection is stale
-            log("Send failed (err {}), connection stale".format(e.errno if hasattr(e, 'errno') else e))
-            close_connection()
-            # Retry once with new connection
-            s = _get_or_create_connection(host, port, use_ssl)
-            s.send(req.encode())
+            s = _get_or_create_connection(host, port, use_ssl, timeout=timeout)
 
-        data = b""
-        while True:
+            # Send request — fails fast if connection is already broken
             try:
-                chunk = s.recv(1024)
-                if not chunk:
-                    # Connection closed by remote
-                    break
-                data += chunk
-                # Check if we have complete response (look for end of headers + body)
-                if b"\r\n\r\n" in data:
-                    # For getPlayerStatus, response is small, likely complete
-                    # Check if we have received all data
-                    if len(data) > 100 and data[-1:] == b"}":
-                        break
+                s.send(req.encode())
             except OSError as e:
-                # Check error type
-                err_num = e.errno if hasattr(e, 'errno') else str(e)
-                log("Recv error: {}".format(err_num))
-                # Connection error - invalidate cache
-                if err_num in (-104, 104, 'ECONNRESET', 'EPIPE', -1):
-                    log("Connection reset, clearing cache")
-                    close_connection()
-                break
+                log("Send failed ({}), retrying with fresh connection".format(
+                    e.errno if hasattr(e, 'errno') else e))
+                close_connection()
+                if attempt == 0:
+                    continue
+                return None
 
-        # Check for empty response (connection problem)
-        if not data or len(data) < 20:
-            log("Empty HTTP response")
+            # Receive response
+            data = b""
+            recv_error = False
+            while True:
+                try:
+                    chunk = s.recv(1024)
+                    if not chunk:
+                        break
+                    data += chunk
+
+                    if b"\r\n\r\n" in data and data[-1:] == b"}":
+                        break  # Complete JSON response
+
+                except OSError as e:
+                    err_num = e.errno if hasattr(e, 'errno') else str(e)
+                    log("Recv error: {}".format(err_num))
+                    # ETIMEDOUT with headers+body already received = server finished sending
+                    if err_num in (-110, 110) and b"\r\n\r\n" in data and len(data) > 20:
+                        log("Recv timeout with data — treating as complete response")
+                        break
+                    close_connection()
+                    recv_error = True
+                    break
+
+            if recv_error or not data or len(data) < 20:
+                log("Empty HTTP response")
+                close_connection()
+                if attempt == 0:
+                    log("Retrying with fresh connection...")
+                    continue
+                return None
+
+            return data
+
+        except Exception as e:
+            log("http_get error: {}".format(e))
             close_connection()
+            if attempt == 0:
+                continue
             return None
 
-        return data
-
-    except Exception as e:
-        log("http_get error: {}".format(e))
-        # Clear cached connection on error
-        close_connection()
-        return None
+    return None
 
 def fetch_url(url, timeout=5):
     """

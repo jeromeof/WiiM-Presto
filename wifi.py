@@ -19,6 +19,9 @@ def connect_wifi():
     log("Init WiFi")
     log("Connecting to SSID: {}".format(WIFI_SSID))
 
+    import rp2
+    rp2.country('GB')  # Set country code for correct channel scanning
+
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
     
@@ -38,14 +41,21 @@ def connect_wifi():
         networks = wlan.scan()
         log("Found {} networks".format(len(networks)))
         ssid_found = False
+        found_ssids = []
         for net in networks:
-            ssid = net[0].decode('utf-8')
-            if ssid == WIFI_SSID:
-                ssid_found = True
-                log("Target SSID found: {}".format(WIFI_SSID))
-                break
-        if not ssid_found:
+            try:
+                ssid = net[0].decode('utf-8')
+                if ssid:
+                    found_ssids.append(ssid)
+                if ssid == WIFI_SSID:
+                    ssid_found = True
+            except Exception:
+                pass
+        if ssid_found:
+            log("Target SSID found: {}".format(WIFI_SSID))
+        else:
             log("WARNING: SSID '{}' not found in scan!".format(WIFI_SSID))
+            log("Networks visible: {}".format(found_ssids))
     except Exception as e:
         log("Network scan failed: {}".format(e))
 
@@ -143,26 +153,32 @@ def connect_wifi():
     ip = wlan.ifconfig()[0]
     log("WiFi connected! IP: {}".format(ip))
 
-    # Synchronize time with NTP server
-    if ntptime:
-        try:
-            log("Syncing time with NTP...")
-            ntptime.settime()
+    sync_ntp()
 
-            # Apply timezone offset if needed
-            if TIMEZONE_OFFSET != 0:
-                import machine
-                rtc = machine.RTC()
-                year, month, day, _, hour, minute, second, _ = rtc.datetime()
 
-                # Adjust hour by timezone offset
-                hour = (hour + TIMEZONE_OFFSET) % 24
-                rtc.datetime((year, month, day, 0, hour, minute, second, 0))
-
-                log("Time synced and adjusted for timezone offset: {}".format(TIMEZONE_OFFSET))
-            else:
-                log("Time synced with NTP (UTC)")
-        except Exception as e:
-            log("NTP sync failed: {}".format(e))
-    else:
+def sync_ntp():
+    """
+    Synchronize time with NTP and apply timezone offset.
+    Safe to call at any time while WiFi is connected.
+    Returns True on success, False on failure.
+    """
+    if ntptime is None:
         log("ntptime module not available")
+        return False
+    try:
+        log("Syncing time with NTP...")
+        ntptime.settime()
+
+        if TIMEZONE_OFFSET != 0:
+            import machine
+            rtc = machine.RTC()
+            year, month, day, _, hour, minute, second, _ = rtc.datetime()
+            hour = (hour + TIMEZONE_OFFSET) % 24
+            rtc.datetime((year, month, day, 0, hour, minute, second, 0))
+            log("NTP synced, TZ offset: {}h".format(TIMEZONE_OFFSET))
+        else:
+            log("NTP synced (UTC)")
+        return True
+    except Exception as e:
+        log("NTP sync failed: {}".format(e))
+        return False

@@ -26,6 +26,11 @@ if USE_ROON:
         test_connection
     )
     print("Music client: Using Roon")
+
+    # Roon doesn't support WiiM-style presets
+    def fetch_presets():
+        return None
+
 else:
     # Import WiiM client
     from wiim_client import (
@@ -35,7 +40,8 @@ else:
         resume_playback,
         next_track,
         previous_track,
-        load_preset
+        load_preset,
+        fetch_presets
     )
     print("Music client: Using WiiM")
 
@@ -52,5 +58,6 @@ __all__ = [
     'next_track',
     'previous_track',
     'load_preset',
+    'fetch_presets',
     'test_connection'
 ]

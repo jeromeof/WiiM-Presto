@@ -52,23 +52,28 @@ class TouchManager:
         """Background touch polling loop."""
         log("TouchManager: Polling loop started")
 
+        was_touching = False  # Track previous state for edge detection
+
         while True:
             if self.enabled:
                 self.touch.poll()
                 touch_a = self.presto.touch_a
+                is_touching = bool(touch_a and touch_a.touched)
 
-                if touch_a and touch_a.touched:
+                # Only fire on the leading edge (finger down, not while held)
+                if is_touching and not was_touching:
                     self.screen_touched = True
                     self.last_touch_x = touch_a.x
                     self.last_touch_y = touch_a.y
                     self.last_touch_time = time.ticks_ms()
-
                     log("TouchManager: Touch at ({}, {})".format(
                         touch_a.x, touch_a.y
                     ))
 
+                was_touching = is_touching
                 await asyncio.sleep_ms(50)  # Poll every 50ms
             else:
+                was_touching = False
                 await asyncio.sleep_ms(500)  # Sleep longer when disabled
 
     def was_touched(self):
@@ -141,7 +146,7 @@ class TouchManager:
         Handle touch on Clock screen (paused/stopped).
         Returns: ("show_buttons", "hide_buttons", "resume", "preset_1", "preset_2", "preset_3", "preset_4", None)
         """
-        from input_handler import preset_buttons
+        from input_handler import preset_buttons, preset_button_numbers
 
         touched, x, y = self.was_touched()
         if not touched:
@@ -161,7 +166,7 @@ class TouchManager:
         in_preset = None
         for i, preset_btn in enumerate(preset_buttons):
             if self.is_touch_in_button(x, y, preset_btn):
-                in_preset = i + 1  # Preset number (1-4)
+                in_preset = preset_button_numbers[i]  # Actual WiiM preset number
                 break
 
         if self.resume_button_visible:

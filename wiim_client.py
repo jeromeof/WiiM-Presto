@@ -93,7 +93,7 @@ def send_player_command(command):
         bool: True if command succeeded (response contains "OK")
     """
     try:
-        raw = http_get(_build_path("setPlayerCmd:{}".format(command)))
+        raw = http_get(_build_path("setPlayerCmd:{}".format(command)), timeout=5)
 
         if not raw:
             log("Control command failed: empty response")
@@ -137,6 +137,50 @@ def previous_track():
     return send_player_command("prev")
 
 
+def fetch_presets():
+    """
+    Fetch preset list from WiiM device using the getPresetInfo command.
+    Returns a list of 4 name strings (None for unconfigured slots), or None on error.
+    Preset numbers on the device are 1-based; the returned list is 0-indexed (slot 1 = index 0).
+    """
+    try:
+        raw = http_get(_build_path("getPresetInfo"))
+        if not raw:
+            log("Preset fetch: empty response")
+            return None
+
+        log("Preset fetch raw (first 200): {}".format(raw[:200]))
+
+        start = raw.find(b"{")
+        if start < 0:
+            log("Preset fetch: no JSON found in response")
+            return None
+
+        body = raw[start:].rstrip(b"% \r\n")
+        log("Preset fetch body: {}".format(body[:200]))
+        data = json.loads(body)
+
+        preset_list = data.get("preset_list", [])
+        log("Fetched {} presets from WiiM".format(len(preset_list)))
+
+        names = [None, None, None, None]
+        for preset in preset_list:
+            try:
+                num = int(preset.get("number", 0))
+                name = preset.get("name", "Preset {}".format(num))
+                if 1 <= num <= 4:
+                    names[num - 1] = name
+                    log("Preset {}: {}".format(num, name))
+            except Exception:
+                pass
+
+        return names
+
+    except Exception as e:
+        log("Fetch presets error: {}".format(e))
+        return None
+
+
 def load_preset(preset_number):
     """
     Load a WiiM preset (1-4).
@@ -154,7 +198,7 @@ def load_preset(preset_number):
 
     try:
         # WiiM preset command format: MCUKeyShortClick:N
-        raw = http_get(_build_path("MCUKeyShortClick:{}".format(preset_number)))
+        raw = http_get(_build_path("MCUKeyShortClick:{}".format(preset_number)), timeout=5)
 
         if not raw:
             log("Preset {} command failed: empty response".format(preset_number))
