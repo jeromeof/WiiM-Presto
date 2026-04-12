@@ -6,7 +6,7 @@ USE_ROON = False  # Set to True to use Roon instead of WiiM
 # Import from secrets file
 try:
     from secrets import (
-        WIFI_SSID, WIFI_PASSWORD, WIIM_IP, TIMEZONE_OFFSET
+        WIFI_SSID, WIFI_PASSWORD, WIIM_IP, TIMEZONE_OFFSET, DST_RULE
     )
 except ImportError:
     # Fallback defaults if secrets.py doesn't exist
@@ -14,6 +14,7 @@ except ImportError:
     WIFI_PASSWORD = "YOUR_WIFI_PASSWORD"
     WIIM_IP = "192.168.31.139"
     TIMEZONE_OFFSET = 0
+    DST_RULE = None
 
 # Proxy configuration
 USE_PROXY = False  # Set to True to use proxy, False for direct connection

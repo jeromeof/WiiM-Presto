@@ -15,6 +15,22 @@ _cached_connection = None
 _cached_connection_host = None
 _cached_connection_port = None
 
+# Runtime IP override set by device discovery (overrides WIIM_IP from config)
+_wiim_ip_override = None
+
+
+def set_wiim_ip(ip):
+    """Override the WiiM IP address at runtime (set by device discovery)."""
+    global _wiim_ip_override
+    _wiim_ip_override = ip
+    close_connection()  # Force reconnect to the new host
+    log("WiiM IP set to: {}".format(ip))
+
+
+def _get_wiim_host():
+    """Return the active WiiM IP (override takes priority over config)."""
+    return _wiim_ip_override if _wiim_ip_override else WIIM_IP
+
 def _create_ssl_context():
     """
     Create SSL context for direct WiiM connection.
@@ -122,7 +138,7 @@ def http_get(path, timeout=None):
         port = PROXY_PORT
         use_ssl = False
     else:
-        host = WIIM_IP
+        host = _get_wiim_host()
         port = WIIM_PORT
         use_ssl = True
 

@@ -8,7 +8,7 @@ try:
     import ntptime
 except ImportError:
     ntptime = None
-from config import WIFI_SSID, WIFI_PASSWORD, TIMEZONE_OFFSET
+from config import WIFI_SSID, WIFI_PASSWORD, TIMEZONE_OFFSET, DST_RULE
 from utils import log
 
 def connect_wifi():
@@ -156,6 +156,58 @@ def connect_wifi():
     sync_ntp()
 
 
+def _day_of_week(year, month, day):
+    """Return day of week using Tomohiko Sakamoto's algorithm. 0=Sunday, 6=Saturday."""
+    t = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4]
+    if month < 3:
+        year -= 1
+    return (year + year // 4 - year // 100 + year // 400 + t[month - 1] + day) % 7
+
+
+def _last_sunday(year, month):
+    """Return the day-of-month of the last Sunday in the given month."""
+    days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    if month == 2 and (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)):
+        last_day = 29
+    else:
+        last_day = days_in_month[month - 1]
+    dow = _day_of_week(year, month, last_day)  # 0=Sun
+    return last_day - dow
+
+
+def _nth_sunday(year, month, n):
+    """Return the day-of-month of the nth Sunday (1-based) in the given month."""
+    dow = _day_of_week(year, month, 1)  # weekday of 1st: 0=Sun
+    first_sunday = 1 + (7 - dow) % 7
+    return first_sunday + (n - 1) * 7
+
+
+def _eu_dst_offset(year, month, day, hour):
+    """
+    Return DST offset (0 or 1) for EU/Ireland/UK rules.
+    DST starts: last Sunday of March at 01:00 UTC    → +1h
+    DST ends:   last Sunday of October at 01:00 UTC  → +0h
+    """
+    now = (month, day, hour)
+    dst_start = (3, _last_sunday(year, 3), 1)
+    dst_end   = (10, _last_sunday(year, 10), 1)
+    return 1 if dst_start <= now < dst_end else 0
+
+
+def _us_dst_offset(year, month, day, hour, base_offset):
+    """
+    Return DST offset (0 or 1) for US/Canada rules (since 2007).
+    DST starts: 2nd Sunday of March at 02:00 local standard time
+    DST ends:   1st Sunday of November at 02:00 local standard time
+    Transition hour is converted to UTC using base_offset.
+    """
+    utc_hour = (2 - base_offset) % 24
+    now = (month, day, hour)
+    dst_start = (3, _nth_sunday(year, 3, 2), utc_hour)
+    dst_end   = (11, _nth_sunday(year, 11, 1), utc_hour)
+    return 1 if dst_start <= now < dst_end else 0
+
+
 def sync_ntp():
     """
     Synchronize time with NTP and apply timezone offset.
@@ -169,15 +221,23 @@ def sync_ntp():
         log("Syncing time with NTP...")
         ntptime.settime()
 
-        if TIMEZONE_OFFSET != 0:
-            import machine
-            rtc = machine.RTC()
-            year, month, day, _, hour, minute, second, _ = rtc.datetime()
-            hour = (hour + TIMEZONE_OFFSET) % 24
-            rtc.datetime((year, month, day, 0, hour, minute, second, 0))
-            log("NTP synced, TZ offset: {}h".format(TIMEZONE_OFFSET))
+        import machine
+        rtc = machine.RTC()
+        year, month, day, _, hour, minute, second, _ = rtc.datetime()
+
+        if DST_RULE == "EU":
+            dst_offset = _eu_dst_offset(year, month, day, hour)
+        elif DST_RULE == "US":
+            dst_offset = _us_dst_offset(year, month, day, hour, TIMEZONE_OFFSET)
         else:
-            log("NTP synced (UTC)")
+            dst_offset = 0
+        total_offset = TIMEZONE_OFFSET + dst_offset
+
+        if total_offset != 0:
+            hour = (hour + total_offset) % 24
+            rtc.datetime((year, month, day, 0, hour, minute, second, 0))
+
+        log("NTP synced, UTC+{} (base:{}, DST:{})".format(total_offset, TIMEZONE_OFFSET, dst_offset))
         return True
     except Exception as e:
         log("NTP sync failed: {}".format(e))

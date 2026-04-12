@@ -450,6 +450,53 @@ async def monitor():
 # BOOT HELPER FUNCTIONS
 # =======================
 
+def _try_wiim_connection(attempts=3):
+    """
+    Quick check: can we reach the configured WiiM IP?
+    Tries `attempts` times with a 1-second gap.
+
+    Returns:
+        True if at least one status fetch succeeded, False otherwise.
+    """
+    from wiim_client import fetch_player_status as _test_status
+    for _ in range(attempts):
+        if _test_status() is not None:
+            return True
+        time.sleep(1)
+    return False
+
+
+def _run_device_discovery():
+    """
+    Run SSDP discovery and, if devices are found, show the device picker.
+    Sets the runtime IP override in http_client if the user picks a device.
+    """
+    from config import WIIM_IP as _cfg_ip
+
+    show_boot_message("Scanning for WiiM devices...")
+    log("Starting WiiM device discovery...")
+
+    from wiim_discovery import discover_wiim_devices
+    devices = discover_wiim_devices(timeout=6)
+
+    if not devices:
+        show_boot_message("No WiiM found - using {}".format(_cfg_ip))
+        log("No devices found via SSDP, falling back to configured IP")
+        time.sleep(2)
+        return
+
+    from device_picker import show_device_picker
+    selected_ip = show_device_picker(presto, devices, configured_ip=_cfg_ip)
+
+    if selected_ip and selected_ip != _cfg_ip:
+        from http_client import set_wiim_ip
+        set_wiim_ip(selected_ip)
+        show_boot_message("Connecting to {}...".format(selected_ip))
+        log("User selected device: {}".format(selected_ip))
+    else:
+        log("Picker dismissed - using configured IP: {}".format(_cfg_ip))
+
+
 def show_boot_message(message, color=(255, 255, 255)):
     """Show a boot status message on screen."""
     try:
@@ -552,6 +599,12 @@ def main():
             except Exception as wifi_error:
                 show_wifi_error(wifi_error)
                 log("Retrying WiFi connection...")
+
+        # Test WiiM connection; if the configured IP is unreachable run discovery
+        show_boot_message("Connecting to WiiM...")
+        if not _try_wiim_connection():
+            log("Configured WiiM IP unreachable - running discovery")
+            _run_device_discovery()
 
         # Fetch preset names from WiiM; fall back to config defaults so buttons
         # are always initialised with correct touch areas before the first draw.
